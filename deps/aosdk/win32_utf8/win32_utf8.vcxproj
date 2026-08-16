@@ -1,0 +1,135 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="12.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup Label="UserMacros">
+    <ProjectTitle>Win32 UTF-8 wrapper</ProjectTitle>
+    <ProjectURL>https://github.com/thpatch/win32_utf8</ProjectURL>
+  </PropertyGroup>
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug Dynamic|Win32">
+      <Configuration>Debug Dynamic</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug Dynamic|x64">
+      <Configuration>Debug Dynamic</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug Static|Win32">
+      <Configuration>Debug Static</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug Static|x64">
+      <Configuration>Debug Static</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release Dynamic|Win32">
+      <Configuration>Release Dynamic</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release Dynamic|x64">
+      <Configuration>Release Dynamic</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release Static|Win32">
+      <Configuration>Release Static</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release Static|x64">
+      <Configuration>Release Static</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)'=='Debug Dynamic'">
+    <Import Project="Debug.props" />
+    <Import Project="Dynamic.props" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)'=='Debug Static'">
+    <Import Project="Debug.props" />
+    <Import Project="Static.props" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)'=='Release Dynamic'">
+    <Import Project="Release.props" />
+    <Import Project="Dynamic.props" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)'=='Release Static'">
+    <Import Project="Release.props" />
+    <Import Project="Static.props" />
+  </ImportGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{A185D5A7-3E03-4C87-9774-65C014631F5B}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <RootNamespace>win32_utf8</RootNamespace>
+    <ProjectName>win32_utf8</ProjectName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <CharacterSet>Unicode</CharacterSet>
+    <PlatformToolset>v120_xp</PlatformToolset>
+    <OutDir>$(SolutionDir)bin\</OutDir>
+    <IntDir>$(SolutionDir)obj\$(ProjectName) $(Configuration) $(PlatformShortName)\</IntDir>
+    <TargetName>$(ProjectName)_$(Linking)_$(PlatformShortName)$(TargetSuffix)</TargetName>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <AdditionalOptions>/Zc:threadSafeInit- %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>delayimp.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalOptions>/DELAYLOAD:comdlg32.dll /DELAYLOAD:dsound.dll /DELAYLOAD:gdi32.dll /DELAYLOAD:ole32.dll /DELAYLOAD:psapi.dll /DELAYLOAD:shell32.dll /DELAYLOAD:shlwapi.dll /DELAYLOAD:user32.dll /DELAYLOAD:version.dll /DELAYLOAD:wininet.dll %(AdditionalOptions)</AdditionalOptions>
+      <ModuleDefinitionFile>win32_utf8.def</ModuleDefinitionFile>
+    </Link>
+  </ItemDefinitionGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <ItemGroup>
+    <ClInclude Include="src\comdlg32_dll.h" />
+    <ClInclude Include="src\dsound_dll.h" />
+    <ClInclude Include="src\entry.h" />
+    <ClInclude Include="src\gdi32_dll.h" />
+    <ClInclude Include="src\kernel32_dll.h" />
+    <ClInclude Include="src\macros.h" />
+    <ClInclude Include="src\message_enum.h" />
+    <ClInclude Include="src\msvcrt_dll.h" />
+    <ClInclude Include="src\psapi_dll.h" />
+    <ClInclude Include="src\shell32_dll.h" />
+    <ClInclude Include="src\shlwapi_dll.h" />
+    <ClInclude Include="src\user32_dll.h" />
+    <ClInclude Include="src\utf.h" />
+    <ClInclude Include="src\version_dll.h" />
+    <ClInclude Include="src\wininet_dll.h" />
+    <ClInclude Include="src\wrappers.h" />
+    <ClInclude Include="win32_utf8.h" />
+    <ClCompile Include="win32_utf8_build_dynamic.c">
+      <ExcludedFromBuild Condition="'$(ConfigurationType)'!='DynamicLibrary'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="win32_utf8_build_static.c">
+      <ExcludedFromBuild Condition="'$(ConfigurationType)'=='DynamicLibrary'">true</ExcludedFromBuild>
+    </ClCompile>
+    <None Include="entry_main.c" />
+    <None Include="entry_winmain.c" />
+    <None Include="src\build.c" />
+    <None Include="src\entry.c" />
+    <None Include="src\comdlg32_dll.c" />
+    <None Include="src\dsound_dll.c" />
+    <None Include="src\gdi32_dll.c" />
+    <None Include="src\kernel32_dll.c" />
+    <None Include="src\macros.c" />
+    <None Include="src\msvcrt_dll.c" />
+    <None Include="src\psapi_dll.c" />
+    <None Include="src\shell32_dll.c" />
+    <None Include="src\shlwapi_dll.c" />
+    <None Include="src\user32_dll.c" />
+    <None Include="src\utf.c" />
+    <None Include="src\version_dll.c" />
+    <None Include="src\win32_utf8.c" />
+    <None Include="src\wininet_dll.c" />
+    <None Include="src\wrappers.c" />
+    <None Include="win32_utf8.def" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>
