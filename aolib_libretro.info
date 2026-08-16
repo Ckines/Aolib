@@ -1,0 +1,24 @@
+# Software Information
+display_name = "Aolib"
+authors = "Ckines"
+supported_extensions = "spc|nsf|nsfe|vgm|vgz|gbs|hes|kss|sap|ay|gym|psf|minipsf|psf2|minipsf2|ssf|minissf|zip"
+corename = "Aolib"
+categories = "Music player"
+license = "GPLv2"
+permissions = ""
+display_version = "1.1.1"
+
+# Hardware Information
+manufacturer = "Various"
+systemname = "Music"
+systemid = "aolib"
+
+# Libretro Features
+supports_no_game = "false"
+savestate = "false"
+input_descriptors = "false"
+core_options = "true"
+hw_render = "false"
+disk_control = "false"
+
+description = "A Libretro core for playing classic video game music in RetroArch, with a built-in graphical interface: a browsable track list, VU meter, spectrum analyzer, and playback controls. Plays SPC/NSF/GBS/HES/KSS/SAP/AY/GYM (libgme), VGM/VGZ (libvgm) and PSF/PSF2/SSF (aosdk). Accepts .zip albums and plays tracks in natural order."
