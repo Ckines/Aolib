@@ -24,6 +24,7 @@ across entries in the same archive, but don't show up as tracks.
 The breakdown of which chip covers which system or arcade board is in
 [SUPPORTED_SYSTEMS.md](SUPPORTED_SYSTEMS.md).
 
+![AOLIB deck screenshot](aolibdeck.png) ![AOLIB deck screenshot](aolibdeck1.png)
 ## Architecture
 
 Three distinct lifetime layers: `CoreContext` is rebuilt on every
