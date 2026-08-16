@@ -229,6 +229,7 @@ std::unique_ptr<IAudioEngine> construct_engine_for(
     const char* uri, const std::string& display_name,
     const uint8_t* data, std::size_t size, double default_fade_seconds,
     bool loop_infinite, const std::vector<ZipEntry>* siblings = nullptr) {
+    (void)siblings; // solo se usa dentro de #ifdef AOLIB_WITH_PSF más abajo
 
     const bool looks_psf = has_suffix(display_name, ".psf") || has_suffix(display_name, ".minipsf");
     const bool looks_psf2 = has_suffix(display_name, ".psf2") || has_suffix(display_name, ".minipsf2");
