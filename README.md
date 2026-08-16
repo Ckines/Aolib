@@ -110,7 +110,7 @@ what's actually heard, not what the engine produced.
  [I/O & bridges]       : Integration with the Libretro API
 ```
 
-## Building
+## Building / Installation
 
 Requires GNU Make and a C++17 compiler. All dependencies are vendored
 under `deps/`; nothing else needs to be installed.
@@ -137,12 +137,9 @@ make dist-windows  # same, for dist-windows/
 make dist-all      # both platforms
 ```
 
-`.info` files aren't generated: they're edited by hand.
-
-## Installation
-
-Copy the `.so` or `.dll` into RetroArch's core folder, along with its
-`.info` file. Both files must share the same name.
+`info` lives at the repo root (`aolib_libretro.info`, single source of
+truth) and is copied into `dist-linux/`/`dist-windows/` by the packaging
+targets. Edit the root copy, not the ones under `dist/`.
 
 ## Controls
 
