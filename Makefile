@@ -145,6 +145,16 @@ LIBVGM_SOURCES += $(DEPS_DIR)/libvgm/emu/cores/k053260.c
 LIBVGM_CFLAGS  += -DSNDDEV_GA20
 LIBVGM_SOURCES += $(DEPS_DIR)/libvgm/emu/cores/iremga20.c
 
+# YM2203 (OPN): unlike the chips above, opnintf.c/fmopn.c LINK to an
+# internal AY8910/SSG device. That link silently drops unless
+# SNDDEV_AY8910 + EC_AY8910_EMU2149 are also compiled -- otherwise the
+# SSG channel of any real YM2203 VGM plays mute with no warning.
+LIBVGM_CFLAGS  += -DSNDDEV_YM2203 -DSNDDEV_AY8910 -DEC_AY8910_EMU2149
+LIBVGM_SOURCES += $(DEPS_DIR)/libvgm/emu/cores/opnintf.c $(DEPS_DIR)/libvgm/emu/cores/fmopn.c \
+                   $(DEPS_DIR)/libvgm/emu/cores/ayintf.c $(DEPS_DIR)/libvgm/emu/cores/emu2149.c
+# Side effect of -DSNDDEV_AY8910: standalone AY8910 VGMs (opcode 0xA0,
+# no YM2203 involved) also work for free.
+
 # YM3812 (OPL2): simple pattern, EC_YM3812_MAME chosen for consistency.
 # YM3526 (OPL, OPL2's predecessor) shares fmopl.c with YM3812, no extra
 # file needed. Common in Bubble Bobble (DEV_ID 0x0A).
@@ -277,6 +287,13 @@ CORE_SOURCES := src/libretro.cpp \
 # (unzip.c/ioapi.c) -- the latter is needed even with USE_PSF_ENGINE=0.
 ZLIB_SOURCES := $(wildcard $(DEPS_DIR)/aosdk/zlib/*.c)
 
+# PSF/SSF container parser + utility hash table, shared by all three
+# aosdk engines. corlett.c is the format parser; utils.c provides the
+# hashtable_* functions corlett.c depends on.
+AOSDK_PARSE_SOURCES := \
+  $(DEPS_DIR)/aosdk/corlett.c \
+  $(DEPS_DIR)/aosdk/utils.c
+
 # ─── aosdk: full engine (R3000A CPU + SPU) ───────────────────────────────
 # Per license.txt: BSD (corlett/eng_psf/eng_psf2/eng_spu/psx_hw), MAME
 # (psx.c, the CPU), GPL (peops/peops2, the SPU). Excludes main.c and the
@@ -367,23 +384,27 @@ DEPFLAGS := -MMD -MP
 # ═══════════════════════ 'make dist' ═══════════════════════════════
 #
 # dist/ doesn't update itself -- always rebuild from a clean tree and
-# copy the result over dist/, never the other way around. dist/*.info is
-# edited by hand, not touched here.
+# copy the result over dist/, never the other way around. The .info
+# lives at the repo root (aolib_libretro.info, single source of truth)
+# and is copied here; edit the root copy, not the ones under dist/.
 #
 # 'dist' builds Linux only. Windows is a separate target since it needs
 # `make clean` in between and the MinGW toolchain isn't always available.
 dist: clean
 	$(MAKE) all USE_PSF_ENGINE=1
+	mkdir -p dist-linux
 	cp aolib_libretro.so dist-linux/aolib_libretro.so
-	@echo "dist-linux/aolib_libretro.so updated. dist-linux/aolib_libretro.info is NOT"
-	@echo "touched automatically -- edit it by hand if version/notes changed."
-	@ls -la dist-linux/aolib_libretro.so
+	cp aolib_libretro.info dist-linux/aolib_libretro.info
+	@echo "dist-linux/aolib_libretro.{so,info} updated (info copied from repo root)."
+	@ls -la dist-linux/aolib_libretro.so dist-linux/aolib_libretro.info
 
 dist-windows: clean
 	$(MAKE) all USE_PSF_ENGINE=1 PLATFORM=windows
+	mkdir -p dist-windows
 	cp aolib_libretro.dll dist-windows/aolib_libretro.dll
-	@echo "dist-windows/aolib_libretro.dll updated. .info NOT touched automatically."
-	@ls -la dist-windows/aolib_libretro.dll
+	cp aolib_libretro.info dist-windows/aolib_libretro.info
+	@echo "dist-windows/aolib_libretro.{dll,info} updated (info copied from repo root)."
+	@ls -la dist-windows/aolib_libretro.dll dist-windows/aolib_libretro.info
 
 dist-all: dist dist-windows
 
