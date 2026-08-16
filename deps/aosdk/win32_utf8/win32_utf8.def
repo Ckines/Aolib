@@ -1,0 +1,163 @@
+EXPORTS
+	w32u8_set_fallback_codepage @1
+	w32u8_get_wrapped_functions
+	win32_utf8_entry
+
+	; Macros
+	; ------
+	printf_format_parse
+	windows_version
+
+	; Unicode
+	; -------
+	StringToUTF16
+	StringToUTF16_VLA
+	StringToUTF8
+	StringToMBFixed
+	CharToUTF16
+	EnsureUTF8
+
+	; comdlg32.dll
+	; ------------
+	GetOpenFileNameU
+	GetSaveFileNameU
+
+	; dsound.dll
+	; ----------
+	DirectSoundCaptureEnumerateU
+	DirectSoundEnumerateU
+
+	; gdi32.dll
+	; ---------
+	lower_CreateFontA
+	lower_CreateFontIndirectA
+	lower_EnumFontFamiliesA
+
+	lower_CreateFontW
+	lower_CreateFontIndirectW
+	lower_EnumFontFamiliesW
+
+	AddFontResourceExU
+	CreateFontU
+	CreateFontIndirectU
+	CreateFontIndirectExU
+	EnumFontFamiliesU
+	EnumFontFamiliesExU
+	ExtTextOutU
+	GetGlyphOutlineU
+	GetTextExtentPoint32U
+	RemoveFontResourceExU
+	TextOutU
+	PolyTextOutU
+
+	; kernel32.dll
+	; ------------
+	CopyFileU
+	CopyFileExU
+	CreateDirectoryU
+	CreateFileU
+	CreateFileMappingU
+	CreateProcessU
+	DeleteFileU
+	FindFirstFileU
+	FindNextFileU
+	FormatMessageU
+	GetCommandLineU
+	GetCurrentDirectoryU
+	GetEnvironmentVariableU
+	GetFileAttributesU
+	GetFileAttributesExU
+	GetFullPathNameU
+	GetModuleFileNameU
+	GetModuleHandleExU
+	GetPrivateProfileIntU
+	GetPrivateProfileStringU
+	GetStartupInfoU
+	GetTempFileNameU
+	GetTempPathU
+	IsDBCSLeadByteFB
+	LoadLibraryU
+	LoadLibraryExU
+	MoveFileU
+	MoveFileExU
+	MoveFileWithProgressU
+	MultiByteToWideCharU
+	OpenFileMappingU
+	ReadFileU
+	RemoveDirectoryU
+	SetCurrentDirectoryU
+	SetEnvironmentVariableU
+	WideCharToMultiByteU
+	WriteFileU
+	WritePrivateProfileStringU
+
+	; msvcrt.dll
+	; ----------
+	fopen_u
+
+	; psapi.dll
+	; ---------
+	GetModuleFileNameExU
+
+	; shell32.dll
+	; -----------
+	CommandLineToArgvU
+	DragQueryFileU
+	ExtractIconU
+	ExtractIconExU
+	SHBrowseForFolderU
+	SHGetFolderPathU
+	SHGetPathFromIDListU
+	SHParseDisplayNameU
+	ShellExecuteU
+
+	; shlwapi.dll
+	; -----------
+	PathFileExistsU
+	PathFindFileNameU
+	PathMatchSpecU
+	PathMatchSpecExU
+	PathRemoveFileSpecU
+	PathAddBackslashU
+	PathIsDirectoryU
+	PathIsRelativeU
+	PathCanonicalizeU
+	PathCombineU
+	PathAppendU
+
+	; user32.dll
+	; ----------
+	CharLowerU
+	CharNextU
+	CreateDialogParamU
+	CreateWindowExU
+	DialogBoxParamU
+	DrawTextU
+	DrawTextExU
+	GetClassInfoU
+	GetClassInfoExU
+	InsertMenuItemU
+	LoadStringU
+	MessageBoxU_Generic
+	MessageBoxU
+	RegisterClassU
+	RegisterClassExU
+	SetDlgItemTextU
+	SetMenuItemInfoU
+	SetWindowTextU
+	TabbedTextOutU
+	UnregisterClassU
+
+	; version.dll
+	; -----------
+	GetFileVersionInfoU
+	GetFileVersionInfoExU
+	GetFileVersionInfoSizeU
+	GetFileVersionInfoSizeExU
+
+	; wininet.dll
+	; -----------
+	InternetCombineUrlU
+	InternetCrackUrlU
+	InternetOpenU
+	InternetOpenUrlU
