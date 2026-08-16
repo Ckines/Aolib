@@ -14,7 +14,7 @@
 | **YM2612 (OPN2)** | Yamaha | Sega Mega Drive/Genesis, System C2, System 18, Sega CD/Mega-CD, 32X |
 | **YM2151 (OPM)** | Yamaha | Sega System 16/18/24, Capcom CPS-1, Konami arcade |
 | **YM3526 (OPL)** | Yamaha | Arcade Taito |
-| **YM3812 (OPL2)** | Yamaha | Arcade genérico + AdLib/Sound Blaster PC |
+| **YM3812 (OPL2)** | Yamaha | Arcade + AdLib/Sound Blaster PC |
 | **YMF262 (OPL3)** | Yamaha | Sound Blaster 16 / PC-AT |
 | **YMW258 (MultiPCM)** | Yamaha (alias Sega 315-5560) | System Multi 32, Sega Model 1/2 |
 | **YMZ280B** | Yamaha | PCM arcade |
