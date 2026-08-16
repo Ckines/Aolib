@@ -1,0 +1,77 @@
+name: CI / build
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: "Build (platform: ${{ matrix.platform }}, psf: ${{ matrix.use_psf }})"
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        platform: [linux, windows]   # "windows" cross-compiles on Linux via mingw-w64
+        use_psf: [true, false]       # true = release config (PSF/PSF2/SSF, non-commercial
+                                      # restriction applies); false = BSD/MIT/LGPL/GPL-only build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y build-essential
+          if [ "${{ matrix.platform }}" = "windows" ]; then
+            sudo apt-get install -y g++-mingw-w64-x86-64 binutils-mingw-w64-x86-64
+            sudo update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-win32
+            sudo update-alternatives --set x86_64-w64-mingw32-gcc /usr/bin/x86_64-w64-mingw32-gcc-win32
+          fi
+
+      - name: Show toolchain versions
+        run: |
+          if [ "${{ matrix.platform }}" = "windows" ]; then
+            x86_64-w64-mingw32-g++ --version
+          else
+            g++ --version
+          fi
+
+      # Object files, keyed per platform/psf combination so the four matrix
+      # legs never share (or corrupt) each other's cache.
+      - name: Cache build objects
+        uses: actions/cache@v4
+        with:
+          path: |
+            **/*.o
+            **/*.d
+          key: >-
+            ${{ matrix.platform }}-psf${{ matrix.use_psf }}-
+            ${{ hashFiles('Makefile', '**/*.c', '**/*.cpp', '**/*.h', '**/*.hpp') }}
+          restore-keys: |
+            ${{ matrix.platform }}-psf${{ matrix.use_psf }}-
+
+      - name: Build
+        run: |
+          if [ "${{ matrix.platform }}" = "windows" ]; then
+            make all USE_PSF_ENGINE=$([ "${{ matrix.use_psf }}" = "true" ] && echo 1 || echo 0) PLATFORM=windows
+            mkdir -p dist-windows
+            cp aolib_libretro.dll dist-windows/
+          else
+            make all USE_PSF_ENGINE=$([ "${{ matrix.use_psf }}" = "true" ] && echo 1 || echo 0)
+            mkdir -p dist-linux
+            cp aolib_libretro.so dist-linux/
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aolib-${{ matrix.platform }}-psf${{ matrix.use_psf }}
+          path: |
+            dist-linux/*
+            dist-windows/*
+          if-no-files-found: error
