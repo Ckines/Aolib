@@ -193,7 +193,7 @@ of the "Portable Sound Format" family also derive from. None of his code
 is vendored directly, but without his format there would be no PSF1,
 PSF2, or SSF.
 
-**[libgme](https://bitbucket.org/mpyne/game-music-emu/](https://github.com/libgme/game-music-emu)** (SPC, NSF/NSFE,
+**[libgme](https://github.com/libgme/game-music-emu)** (SPC, NSF/NSFE,
 GBS, HES, KSS, SAP, AY, GYM) — Shay Green. The YM2612 emulator (Sega
 Genesis/Mega Drive) is by Stéphane Dallongeville.
 
