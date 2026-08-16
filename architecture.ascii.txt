@@ -1,0 +1,71 @@
+===================================================================================================
+                                     AOLIB – core architecture                                     
+                     retro_run() per frame: input ──> state ──> audio ──> video                    
+===================================================================================================
+
+                                     ┌────────────────────────┐
+                                     │  RetroArch (frontend)  │
+                                     │ VFS · input · callbacks│
+                                     └───────────┬────────────┘
+                                                 │
+                             . . . . . . . . . . │ . . (GET_VFS_INTERFACE)
+                             .                   ▼
+┌────────────────────────────.───────────────────────────────────────────────────────────────────┐
+│ libretro.cpp – core entry point                                                                │
+│                                                                                                │
+│ ┌─ PROCESS STATE (survives every retro_load_game()) ─────────────────────────────────────────┐ │
+│ │                                                                                            │ │
+│ │  ┌──────────────────────┐     ┌────────────────────────┐     ┌──────────────────────────┐  │ │
+│ │  │       UiModel        │     │     AudioAnalyzer      │     │        dsp::Reverb       │  │ │
+│ │  │ focus · volume · rpt │     │  VU + spectrum (FFT)   │     │host layer, struct. bypass│  │ │
+│ │  └──────────────────────┘     └────────────────────────┘     └──────────────────────────┘  │ │
+│ └────────────────────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                                │
+│ ┌─ PER-CONTENT STATE / I/O ──────────────────────────────────────────────────────────────────┐ │
+│ │                                                                                            │ │
+│ │  ┌─ CoreContext (rebuilt) ──────┐     ┌────────────────────┐     ┌──────────────────────┐  │ │
+│ │  │ CoreOptions                  │     │     IVFSBridge     │     │  apply_ui_input()    │  │ │
+│ │  │ (zip_entries · frames)       │     │ (LibretroVFS) I/O  │     │  pad/keyboard->deck  │  │ │
+│ │  │        │                     │     └─────────┬──────────┘     └──────────┬───────────┘  │ │
+│ │  │        ▼                     │               │                           │              │ │
+│ │  │ unique_ptr<IAudioEngine>     │               ▼                           ▼              │ │
+│ │  └──────────────────────────────┘     ┌────────────────────┐     ┌──────────────────────┐  │ │
+│ │                                       │  enumerate_zip()   │     │     ui::render()     │  │ │
+│ │                                       │  natural order     │     │  320x240 XRGB8888    │  │ │
+│ │                                       └─────────┬──────────┘     └──────────────────────┘  │ │
+│ └─────────────────────────────────────────────────┼──────────────────────────────────────────┘ │
+│                                                   │ construct_engine_for()                     │
+│                                                   ▼                                            │
+│ ┌─ AUDIO ENGINES (IAudioEngine) ─────────────────────────────────────────────────────────────┐ │
+│ │                                                                                            │ │
+│ │  ┌────────────────┐  ┌────────────────┐  ┌─ aosdk (process-wide guard) ──────────────────┐ │ │
+│ │  │   GmeEngine    │  │  LibvgmEngine  │  │ ┌──────────────┐ ┌──────────────┐ ┌─────────┐ │ │ │
+│ │  │ SPC · NSF · GBS│  │ VGM · VGZ      │  │ │  PsfEngine   │ │  SsfEngine   │ │ Core    │ │ │ │
+│ │  │ HES · KSS...   │  │ (30+ chips)    │  │ │ PSF1 / PSF2  │ │ SSF / Saturn │ │ Guard   │ │ │ │
+│ │  └────────────────┘  └────────────────┘  │ └──────────────┘ └──────────────┘ └─────────┘ │ │ │
+│ │                                          └───────────────────────────────────────────────┘ │ │
+│ └─────────────────────────────────────────────────┬──────────────────────────────────────────┘ │
+│                                                   │ render()                                   │
+│                                                   ▼                                            │
+│ ┌─ EXECUTION PIPELINES (retro_run's real order) ─────────────────────────────────────────────┐ │
+│ │                                                                                            │ │
+│ │  [ AUDIO PIPELINE ]                                                                        │ │
+│ │  ┌──────────┐      ┌──────────┐      ┌───────────┐      ┌──────────┐                       │ │
+│ │  │  engine  │ ───> │  Reverb  │ ───> │ host gain │ ───> │ Analyzer │ ───> audio_batch_cb   │ │
+│ │  │ ->render │      │(amount>0)│      │  volume   │      │  feed()  │                       │ │
+│ │  └──────────┘      └──────────┘      └───────────┘      └──────────┘                       │ │
+│ │   * Reverb BEFORE gain; Analyzer AFTER (VU shows what is actually heard)                   │ │
+│ │                                                                                            │ │
+│ │  [ VIDEO PIPELINE ]                                                                        │ │
+│ │  ┌──────────────┐      ┌──────────────┐      ┌──────────────┐                              │ │
+│ │  │  pad input   │ ───> │   UiModel    │ ───> │ ui::render() │ ───> video_refresh_cb        │ │
+│ │  │ apply_input  │      │focus/deck st.│      │ (idempotent) │                              │ │
+│ │  └──────────────┘      └──────────────┘      └──────────────┘                              │ │
+│ └────────────────────────────────────────────────────────────────────────────────────────────┘ │
+└────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+ Module legend:
+ [Process state]       : Persists across games (UiModel, AudioAnalyzer, dsp::Reverb)
+ [Per-content state]   : Destroyed and rebuilt per ROM (CoreContext, IVFSBridge, Zip, Render)
+ [Audio engines]       : Implement IAudioEngine (GME, LibVGM, AOSDK)
+ [I/O & bridges]       : Integration with the Libretro API
