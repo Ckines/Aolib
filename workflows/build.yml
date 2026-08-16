@@ -61,10 +61,12 @@ jobs:
             make all USE_PSF_ENGINE=$([ "${{ matrix.use_psf }}" = "true" ] && echo 1 || echo 0) PLATFORM=windows
             mkdir -p dist-windows
             cp aolib_libretro.dll dist-windows/
+            cp aolib_libretro.info dist-windows/
           else
             make all USE_PSF_ENGINE=$([ "${{ matrix.use_psf }}" = "true" ] && echo 1 || echo 0)
             mkdir -p dist-linux
             cp aolib_libretro.so dist-linux/
+            cp aolib_libretro.info dist-linux/
           fi
 
       - name: Upload artifact
