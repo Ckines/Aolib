@@ -16,7 +16,7 @@
 | **YM3526 (OPL)** | Yamaha | Arcade Taito |
 | **YM3812 (OPL2)** | Yamaha | Arcade genérico + AdLib/Sound Blaster PC |
 | **YMF262 (OPL3)** | Yamaha | Sound Blaster 16 / PC-AT |
-| **YMW258 (MultiPCM)** | Yamaha (alias Sega 315-5560) | Sega Model 1/2/3 |
+| **YMW258 (MultiPCM)** | Yamaha (alias Sega 315-5560) | System Multi 32, Sega Model 1/2 |
 | **YMZ280B** | Yamaha | PCM arcade |
 | **MSM6258** | OKI | Sharp X68000 |
 | **MSM6295 (OKIM6295)** | OKI | arcade |
