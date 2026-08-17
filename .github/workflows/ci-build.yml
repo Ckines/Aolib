@@ -21,7 +21,7 @@ jobs:
                                       # restriction applies); false = BSD/MIT/LGPL/GPL-only build
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install build dependencies
         run: |
@@ -44,7 +44,7 @@ jobs:
       # Object files, keyed per platform/psf combination so the four matrix
       # legs never share (or corrupt) each other's cache.
       - name: Cache build objects
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             **/*.o
@@ -70,7 +70,7 @@ jobs:
           fi
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: aolib-${{ matrix.platform }}-psf${{ matrix.use_psf }}
           path: |
