@@ -8,7 +8,14 @@
 //
 // Diferencia deliberada con el core oficial: la E/S de minizip pasa por
 // zip_vfs_adapter (IVFSBridge) y nunca por fopen() real, así que se usa
-// unzOpen2() con callbacks propios en vez de unzOpen().
+// unzOpen2_64() con callbacks propios en vez de unzOpen().
+//
+// Toda la API usada aquí es la de 64 bits (unzGetGlobalInfo64,
+// unz_file_info64, unzGetCurrentFileInfo64). No es cosmético: las
+// variantes de 32 bits rechazan cualquier archivo en formato Zip64 --
+// incluidos los .zip pequeños que 7-Zip u otras herramientas marcan como
+// Zip64 sin necesidad-- y el fallo se manifiesta como un .zip que
+// "no contiene ningún fichero soportado".
 
 #pragma once
 
@@ -25,6 +32,31 @@
 
 extern "C" {
 #include "unzip.h"
+}
+
+// Métodos de compresión que minizip sabe descomprimir. El resto (LZMA=14,
+// BZIP2=12, PPMd=98, XZ=95, Zstandard=93...) es ZIP legal pero queda fuera
+// de zlib. 7-Zip y WinRAR ofrecen esos métodos en su diálogo de "añadir a
+// .zip", así que aparecen en archivos reales con más frecuencia de la que
+// cabría esperar; se rechazan con un mensaje explícito en vez de dejar el
+// álbum vacío sin causa aparente.
+inline const char* zip_compression_method_name(uint16_t method) {
+    switch (method) {
+        case 0:  return "Store";
+        case 8:  return "Deflate";
+        case 9:  return "Deflate64";
+        case 12: return "BZip2";
+        case 14: return "LZMA";
+        case 93: return "Zstandard";
+        case 95: return "XZ";
+        case 96: return "JPEG";
+        case 98: return "PPMd";
+        default: return "desconocido";
+    }
+}
+
+inline bool zip_compression_method_supported(uint16_t method) {
+    return method == 0 || method == 8;
 }
 
 struct ZipEntry {
@@ -174,12 +206,12 @@ inline bool enumerate_zip(const std::string& zip_path, IVFSBridge& vfs,
     std::size_t total_reserved = 0;   // bytes ya aceptados en out_entries
     bool budget_warned = false;       // un único WARN cuando se agota el presupuesto, no uno por entrada
 
-    zlib_filefunc_def io = zip_vfs_adapter::make(vfs);
-    unzFile zf = unzOpen2(zip_path.c_str(), &io);
+    zlib_filefunc64_def io = zip_vfs_adapter::make(vfs);
+    unzFile zf = unzOpen2_64(zip_path.c_str(), &io);
     if (!zf) return false;
 
-    unz_global_info gi{};
-    if (unzGetGlobalInfo(zf, &gi) != UNZ_OK) {
+    unz_global_info64 gi{};
+    if (unzGetGlobalInfo64(zf, &gi) != UNZ_OK) {
         unzClose(zf);
         return false;
     }
@@ -189,10 +221,10 @@ inline bool enumerate_zip(const std::string& zip_path, IVFSBridge& vfs,
         return gi.number_entry == 0; // zip vacío no es un error de E/S
     }
 
-    for (uLong i = 0; i < gi.number_entry; ++i) {
-        unz_file_info info{};
+    for (ZPOS64_T i = 0; i < gi.number_entry; ++i) {
+        unz_file_info64 info{};
         char name_buf[512] = {0};
-        if (unzGetCurrentFileInfo(zf, &info, name_buf, sizeof(name_buf) - 1,
+        if (unzGetCurrentFileInfo64(zf, &info, name_buf, sizeof(name_buf) - 1,
                                     nullptr, 0, nullptr, 0) != UNZ_OK) {
             unzClose(zf);
             return false;
@@ -205,7 +237,7 @@ inline bool enumerate_zip(const std::string& zip_path, IVFSBridge& vfs,
         if (!is_dir && zip_entry_extension_supported(entry_name)) {
             // Límite POR ENTRADA: rechaza solo esta entrada, no aborta el
             // resto del .zip.
-            if (info.uncompressed_size > kMaxZipEntryBytes) {
+            if (info.uncompressed_size > static_cast<ZPOS64_T>(kMaxZipEntryBytes)) {
                 if (warn) {
                     warn("[aolib] " + entry_name + ": entrada de " +
                          std::to_string(info.uncompressed_size) +
@@ -220,12 +252,31 @@ inline bool enumerate_zip(const std::string& zip_path, IVFSBridge& vfs,
 
             // Presupuesto TOTAL del .zip: un único WARN al agotarse, no uno
             // por entrada rechazada, para no inundar el log.
-            if (total_reserved + info.uncompressed_size > kMaxZipTotalBytes) {
+            if (static_cast<ZPOS64_T>(total_reserved) + info.uncompressed_size >
+                    static_cast<ZPOS64_T>(kMaxZipTotalBytes)) {
                 if (!budget_warned && warn) {
                     warn("[aolib] " + zip_path + ": presupuesto total del .zip (" +
                          std::to_string(kMaxZipTotalBytes) +
                          " bytes) agotado, entradas restantes omitidas.");
                     budget_warned = true;
+                }
+                if (i + 1 < gi.number_entry) {
+                    if (unzGoToNextFile(zf) != UNZ_OK) break;
+                }
+                continue;
+            }
+
+            // Método de compresión: se comprueba aquí, y no dentro del
+            // fallo genérico de unzOpenCurrentFile(), para poder nombrarlo
+            // en el aviso.
+            const uint16_t method = static_cast<uint16_t>(info.compression_method);
+            if (!zip_compression_method_supported(method)) {
+                if (warn) {
+                    warn("[aolib] " + entry_name + ": método de compresión " +
+                         std::to_string(method) + " (" +
+                         zip_compression_method_name(method) +
+                         ") no soportado; solo Store y Deflate. Vuelve a crear el "
+                         ".zip con compresión normal.");
                 }
                 if (i + 1 < gi.number_entry) {
                     if (unzGoToNextFile(zf) != UNZ_OK) break;
@@ -255,24 +306,40 @@ inline bool enumerate_zip(const std::string& zip_path, IVFSBridge& vfs,
                     continue;
                 }
 
-                uLong total_read = 0;
+                ZPOS64_T total_read = 0;
                 bool read_ok = true;
                 while (total_read < info.uncompressed_size) {
+                    const ZPOS64_T remaining = info.uncompressed_size - total_read;
+                    // unzReadCurrentFile toma un unsigned de 32 bits: el
+                    // resto se pide a trozos. Inalcanzable con
+                    // kMaxZipEntryBytes actual, pero el recorte tiene que
+                    // ser explícito o un futuro límite mayor truncaría en
+                    // silencio.
+                    const unsigned int chunk =
+                        (remaining > 0xFFFFFFFFull) ? 0xFFFFFFFFu
+                                                     : static_cast<unsigned int>(remaining);
                     const int got = unzReadCurrentFile(
-                        zf, entry.data.data() + total_read,
-                        static_cast<unsigned int>(info.uncompressed_size - total_read));
+                        zf, entry.data.data() + total_read, chunk);
                     if (got <= 0) { read_ok = (got == 0); break; }
-                    total_read += static_cast<uLong>(got);
+                    total_read += static_cast<ZPOS64_T>(got);
                 }
                 unzCloseCurrentFile(zf);
 
                 if (read_ok && total_read == info.uncompressed_size) {
-                    total_reserved += info.uncompressed_size; // solo lo realmente aceptado
+                    total_reserved += static_cast<std::size_t>(info.uncompressed_size); // solo lo realmente aceptado
                     out_entries.push_back(std::move(entry));
+                } else if (warn) {
+                    warn("[aolib] " + entry_name +
+                         ": la descompresión falló tras " +
+                         std::to_string(static_cast<unsigned long long>(total_read)) +
+                         " de " +
+                         std::to_string(static_cast<unsigned long long>(info.uncompressed_size)) +
+                         " bytes, omitida.");
                 }
-                // Entradas que no se pueden leer se omiten en silencio del
-                // listado (no abortan el .zip entero); se registran fuera
-                // de esta función si el llamante quiere loguearlo.
+            } else if (warn) {
+                warn("[aolib] " + entry_name +
+                     ": unzOpenCurrentFile() falló (entrada corrupta o "
+                     "cifrada), omitida.");
             }
         }
 
