@@ -41,6 +41,14 @@ public:
     // encuentra 'name'; false si no.
     using SiblingLookup = std::function<bool(const std::string& name, std::vector<uint8_t>& out)>;
 
+    // Aviso opcional cuando NINGUNA vía (ni sibling_lookup ni VFS de disco)
+    // logra resolver un "_lib" pedido por corlett_decode(). Sin esto,
+    // psf_start()/psf2_start() simplemente devuelven AO_FAIL y el único
+    // mensaje que llega al usuario es "psf_start()/psf2_start() falló",
+    // sin decir qué fichero faltaba -- el caso más común es un .psf/.psf2
+    // suelto cuyo _lib compartido no se copió junto a él.
+    using LogFn = std::function<void(const std::string&)>;
+
     // Instala este resolver como el activo para la llamada global ao_get_lib.
     // Debe llamarse antes de invocar psf_start/psf2_start y desinstalarse
     // (o sustituirse) en unload. No es reentrante: un core Libretro carga
@@ -66,6 +74,15 @@ public:
         active_sibling_lookup_ = nullptr;
     }
 
+    // Registra el emisor de avisos, UNA vez, típicamente desde
+    // retro_set_environment(). A diferencia de 'sibling_lookup', no se
+    // resetea en cada install()/uninstall(): log_message() no depende del
+    // contenido cargado, y limpiarlo en cada ciclo de carga solo dejaría
+    // la ruta de fallo muda otra vez sin motivo.
+    static void set_log(LogFn log) noexcept {
+        active_log_ = std::move(log);
+    }
+
     // Implementación real de ao_get_lib(). Se define en aosdk_bridge.cpp
     // con enlazado C, coincidiendo con la firma exacta declarada en ao.h.
     static int get_lib_impl(const char* filename, uint8_t** buffer, uint64_t* length) noexcept;
@@ -74,6 +91,7 @@ private:
     static IVFSBridge* active_vfs_;
     static std::string active_base_dir_;
     static SiblingLookup active_sibling_lookup_;
+    static LogFn active_log_;
 };
 
 // Exclusión mutua COMPARTIDA entre PsfEngine (eng_psf.c) y Psf2Engine
