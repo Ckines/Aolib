@@ -226,7 +226,6 @@ today. Within aosdk:
   distributed under the MAME license, copyright Nicola Salmoria and the
   MAME team.
 
-
 **zlib & minizip** (.zip reading) — Jean-loup Gailly, Mark Adler, Gilles Vollant & Info-ZIP.
 
 **7-Zip SDK** (.7z reading) — Igor Pavlov (Public Domain).
