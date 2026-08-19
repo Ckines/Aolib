@@ -1,0 +1,20 @@
+# Normalizes line endings to LF in the repo and upon checkout
+* text=auto eol=lf
+
+# Shell scripts: explicit and mandatory LF, not just "auto". With CRLF, 
+# bash fails with a cryptic error (or won't even start) on Linux/CI.
+*.sh text eol=lf
+
+# Binaries: excluded from Git's auto-detection, with no text diff/merge 
+# applied to them.
+*.png binary
+*.jpg binary
+*.ico binary
+*.wav binary
+*.dll binary
+*.so binary
+*.dylib binary
+
+# deps/ contains third-party vendored code (libgme, libvgm, aosdk, minizip, 
+# the 7-Zip SDK): excluded from GitHub's "Languages" statistics.
+deps/** linguist-vendored
