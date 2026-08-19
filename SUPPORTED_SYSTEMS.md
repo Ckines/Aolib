@@ -38,7 +38,7 @@
 | **VBoy VSU** | Nintendo | Virtual Boy |
 | **WonderSwan** | Bandai | WonderSwan / WonderSwan Color |
 
-## Vía aosdk (Engines)
+## Via aosdk (Engines)
 
 Unlike everything above, PSF1/PSF2/SSF are not "just another chip" --
 they are complete emulation engines (CPU + DSP + format container)
@@ -57,7 +57,7 @@ files capture the driver of that 68000, not the main program.
 Same architectural pattern as PSF1 (CPU + DSP + Corlett container),
 except with Musashi/SCSP instead of R3000A/SPU.
 
-## Vía libgme (native formats)
+## Via libgme (native formats)
 
 | Format | System |
 |---|---|
