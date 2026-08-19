@@ -19,6 +19,7 @@
 #include "dsp/reverb.hpp"
 #include "vfs_bridge.hpp"
 #include "zip_playlist.hpp"
+#include "sevenzip_playlist.hpp"
 #include "engine/gme_engine.hpp"
 #include "engine/libvgm_engine.hpp"
 #include "ui/audio_analyzer.hpp"
@@ -67,10 +68,11 @@ std::vector<uint32_t> g_framebuffer;   // XRGB8888, kScreenWidth*kScreenHeight
 // se reconstruye en cada rebuild_ui_model().
 
 // Bloques EXTRA rendidos y descartados por cada retro_run() mientras se
-// mantiene >>. 3 extra + 1 emitido = velocidad 4x. Subirlo arriesga que un
-// motor caro (PSF2/SSF, que emulan una CPU real) no termine dentro del
-// presupuesto del frame y se oigan huecos.
-constexpr int kFfExtraBlocks = 3;
+// mantiene >>. 7 extra + 1 emitido = velocidad 8x.
+//
+// Cota fijada por el motor más caro (PSF2, R3000A completo): peor caso
+// medido ~10-13 ms de 8 bloques/llamada.
+constexpr int kFfExtraBlocks = 7;
 
 // ═══════════════════ Diagnóstico de la salida de audio ═══════════════════
 //
@@ -1037,6 +1039,7 @@ RETRO_API void retro_set_environment(retro_environment_t cb) {
         { "spc|nsf|nsfe|vgm|vgz|gbs|hes|kss|sap|ay|gym", false, false },
         { "psf|minipsf|psf2|minipsf2|ssf|minissf",       true,  false },
         { "zip",                                         true,  false },
+        { "7z",                                          true,  false },
         { nullptr, false, false }
     };
     cb(RETRO_ENVIRONMENT_SET_CONTENT_INFO_OVERRIDE, (void*)overrides);
@@ -1090,6 +1093,17 @@ RETRO_API void retro_init(void) {
     if (environ_cb && environ_cb(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &log_iface))
         log_cb = log_iface.log;
 
+#ifdef AOLIB_WITH_PSF
+    // Registrado UNA vez, no en cada carga: log_message() ya se convierte
+    // en no-op si log_cb sigue sin asignar, así que no hace falta esperar
+    // a nada más. Sin esto, un "_lib" sin resolver (típico: un .psf/.psf2
+    // suelto sin su fichero compartido al lado) solo deja "psf_start()
+    // falló" en el log, sin decir qué archivo faltaba.
+    AosdkLibResolver::set_log([](const std::string& msg) {
+        log_message(RETRO_LOG_WARN, "%s", msg.c_str());
+    });
+#endif
+
     if (g_vfs && g_vfs->is_valid())
         log_message(RETRO_LOG_INFO, "[aolib] VFS interface adquirida.");
     else
@@ -1118,12 +1132,13 @@ RETRO_API void retro_get_system_info(struct retro_system_info* info) {
     info->library_name     = "Aolib";
     // Mantener sincronizado con display_version en dist/aolib_libretro.info
     // y dist-windows/aolib_libretro.info.
-    info->library_version  = "1.1.1";
-    info->valid_extensions = "spc|nsf|nsfe|vgm|vgz|gbs|hes|kss|sap|ay|gym|psf|minipsf|psf2|minipsf2|ssf|minissf|zip";
+    info->library_version  = "1.1.2";
+    info->valid_extensions = "spc|nsf|nsfe|vgm|vgz|gbs|hes|kss|sap|ay|gym|psf|minipsf|psf2|minipsf2|ssf|minissf|zip|7z";
     info->need_fullpath    = true;  // valor por defecto conservador; SET_CONTENT_INFO_OVERRIDE lo refina por extensión
-    // true: el core abre los .zip él mismo con minizip (zip_playlist.hpp),
-    // como el core oficial libretro-gme -- si RetroArch los extrajera por
-    // su cuenta antes de pasárnoslos, no podríamos enumerar el resto de
+    // true: el core abre los .zip/.7z él mismo (minizip vía
+    // zip_playlist.hpp, el SDK de 7-Zip vía sevenzip_playlist.hpp), como
+    // el core oficial libretro-gme -- si RetroArch los extrajera por su
+    // cuenta antes de pasárnoslos, no podríamos enumerar el resto de
     // ficheros del archivo ni construir la lista de reproducción plana.
     info->block_extract    = true;
 }
@@ -1189,30 +1204,39 @@ static bool retro_load_game_impl(const struct retro_game_info* game) {
                 game->path ? game->path : "(sin path, contenido en memoria)");
 
     const bool is_zip = game->path && has_suffix(game->path, ".zip");
+    const bool is_7z  = game->path && has_suffix(game->path, ".7z");
 
-    if (is_zip) {
-        // El CORE abre el .zip él mismo (ver zip_playlist.hpp), por eso
-        // .zip se declara con need_fullpath=true.
+    if (is_zip || is_7z) {
+        // El CORE abre el .zip/.7z él mismo (ver zip_playlist.hpp /
+        // sevenzip_playlist.hpp), por eso ambas extensiones se declaran
+        // con need_fullpath=true.
         if (!g_vfs || !g_vfs->is_valid()) {
             log_message(RETRO_LOG_ERROR,
-                "[aolib] .zip sin VFS disponible, no se puede enumerar sin fopen real.");
+                "[aolib] %s sin VFS disponible, no se puede enumerar sin fopen real.",
+                is_7z ? ".7z" : ".zip");
             g_ctx.reset();
             return false;
         }
 
-        // enumerate_zip() no conoce RETRO_LOG_*: se le inyecta cómo emitir
-        // sus avisos de entrada o presupuesto rechazados.
-        auto zip_warn = [](const std::string& msg) { log_message(RETRO_LOG_WARN, "%s", msg.c_str()); };
-        if (!enumerate_zip(game->path, *g_vfs, g_ctx->zip_entries, zip_warn) || g_ctx->zip_entries.empty()) {
+        // enumerate_zip()/enumerate_7z() no conocen RETRO_LOG_*: se les
+        // inyecta cómo emitir sus avisos de entrada o presupuesto
+        // rechazados. Ambas funciones rellenan el mismo
+        // std::vector<ZipEntry>: a partir de aquí el pipeline de carga no
+        // distingue de qué contenedor vino cada entrada.
+        auto archive_warn = [](const std::string& msg) { log_message(RETRO_LOG_WARN, "%s", msg.c_str()); };
+        const bool enumerated = is_7z
+            ? enumerate_7z(game->path, *g_vfs, g_ctx->zip_entries, archive_warn)
+            : enumerate_zip(game->path, *g_vfs, g_ctx->zip_entries, archive_warn);
+        if (!enumerated || g_ctx->zip_entries.empty()) {
             log_message(RETRO_LOG_ERROR,
-                "[aolib] %s: no se encontró ningún fichero soportado dentro del .zip.",
-                game->path);
+                "[aolib] %s: no se encontró ningún fichero soportado dentro del %s.",
+                game->path, is_7z ? ".7z" : ".zip");
             g_ctx.reset();
             return false;
         }
 
-        log_message(RETRO_LOG_INFO, "[aolib] %s: %zu ficheros soportados encontrados en el .zip.",
-                    game->path, g_ctx->zip_entries.size());
+        log_message(RETRO_LOG_INFO, "[aolib] %s: %zu ficheros soportados encontrados en el %s.",
+                    game->path, g_ctx->zip_entries.size(), is_7z ? ".7z" : ".zip");
 
         // TODOS los sondeos de duración y título ANTES de construir el
         // motor real; el orden es obligatorio, ver la cabecera de la
