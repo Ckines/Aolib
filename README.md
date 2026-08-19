@@ -72,7 +72,7 @@ what's actually heard, not what the engine produced.
 │ │  │        ▼                     │               │                           │              │ │
 │ │  │ unique_ptr<IAudioEngine>     │               ▼                           ▼              │ │
 │ │  └──────────────────────────────┘     ┌────────────────────┐     ┌──────────────────────┐  │ │
-│ │                                       │  enumerate_zip()   │     │     ui::render()     │  │ │
+│ │                                       │ enumerate_zip/7z() │     │     ui::render()     │  │ │
 │ │                                       │  natural order     │     │  320x240 XRGB8888    │  │ │
 │ │                                       └─────────┬──────────┘     └──────────────────────┘  │ │
 │ └─────────────────────────────────────────────────┼──────────────────────────────────────────┘ │
@@ -111,6 +111,10 @@ what's actually heard, not what the engine produced.
  [Per-content state]   : Destroyed and rebuilt per ROM (CoreContext, IVFSBridge, Zip, Render)
  [Audio engines]       : Implement IAudioEngine (GME, LibVGM, AOSDK)
  [I/O & bridges]       : Integration with the Libretro API
+ [Archive readers]     : enumerate_zip() (minizip 1.3.1, Store/Deflate, Zip64) and
+                         enumerate_7z() (7-Zip SDK, Store/LZMA/LZMA2) both fill the
+                         same std::vector<ZipEntry> -- downstream code (duration probing,
+                         track switching) never distinguishes .zip from .7z.
 ```
 
 ## Building / Installation
