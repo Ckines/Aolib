@@ -226,17 +226,7 @@ today. Within aosdk:
   distributed under the MAME license, copyright Nicola Salmoria and the
   MAME team.
 
-**zlib** (inflate, vendored alongside aosdk) — Jean-loup Gailly and
-Mark Adler.
 
-**minizip** (`.zip` reading, `deps/minizip`, from zlib 1.3.1) —
-Gilles Vollant, with the Zip64 support by Even Rouault and
-Mathias Svensson.
+**zlib & minizip** (.zip reading) — Jean-loup Gailly, Mark Adler, Gilles Vollant & Info-ZIP.
 
-**7-Zip SDK** (`.7z` reading, `deps/sevenzip`, decode-only subset) —
-Igor Pavlov, public domain.
-
-
-**zlib / minizip** (`.zip` reading, vendored alongside aosdk) —
-Jean-loup Gailly and Mark Adler (zlib), Gilles Vollant (minizip), with
-contributions from Info-ZIP.
+**7-Zip SDK** (.7z reading) — Igor Pavlov (Public Domain).
