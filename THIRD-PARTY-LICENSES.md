@@ -43,11 +43,28 @@ inside the same SDK:
 
 Full authorship credits are in [README.md](README.md#credits).
 
-## zlib / minizip — `deps/aosdk/zlib`
+## zlib — `deps/aosdk/zlib`
 
-zlib license. Jean-loup Gailly and Mark Adler (zlib), Gilles Vollant
-(minizip), with contributions from Info-ZIP. Reading `.zip` playlists
+zlib license. Jean-loup Gailly and Mark Adler. Used for the raw inflate
+that both PSF containers and `.zip` playlists rely on, so it is compiled
+even without PSF/SSF support enabled.
+
+## minizip — `deps/minizip`
+
+zlib license. Gilles Vollant, with the Zip64 work by Even Rouault and
+Mathias Svensson. Taken from `contrib/minizip` of zlib 1.3.1 and vendored
+separately from the older zlib above; `ioapi.c` carries a local patch that
+removes its stdio backend. See
+[deps/minizip/VENDOR.md](deps/minizip/VENDOR.md). Reading `.zip` playlists
 depends on this even without PSF/SSF support enabled.
+
+## 7-Zip SDK — `deps/sevenzip`
+
+Public domain. Igor Pavlov. Decode-only subset (LZMA, LZMA2, and the
+`.7z` container format itself) taken from the official 7-Zip SDK; the
+encoder side and the stdio-based `7zFile.c` are not vendored. See
+[deps/sevenzip/VENDOR.md](deps/sevenzip/VENDOR.md). Reading `.7z`
+playlists depends on this even without PSF/SSF support enabled.
 
 ## What this means in practice
 
