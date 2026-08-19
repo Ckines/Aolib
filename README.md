@@ -5,8 +5,8 @@ graphical interface: a browsable track list, VU meter, spectrum analyzer,
 and playback controls.
 
 It's not a console emulator — it's a player. Load a single file or a
-`.zip` containing a whole album, and it plays it in order, with no need
-for `.m3u` files.
+`.zip`/`.7z` containing a whole album, and it plays it in order, with no
+need for `.m3u` files.
 
 ## Supported formats
 
@@ -16,10 +16,12 @@ for `.m3u` files.
 | libvgm  | `.vgm` `.vgz` (30+ chips, including many arcade ones) |
 | aosdk   | `.psf` `.minipsf` `.psf2` `.minipsf2` `.ssf` `.minissf` |
 
-It also accepts `.zip`: the core enumerates its contents, sorts the tracks
-naturally (`9 Theme` before `10 Theme`), and plays them as an album.
-Shared library files (`.psflib`, `.psf2lib`, `.ssflib`) are resolved
-across entries in the same archive, but don't show up as tracks.
+It also accepts `.zip` and `.7z`: the core enumerates the archive's
+contents itself, sorts the tracks naturally (`9 Theme` before `10 Theme`),
+and plays them as an album. Shared library files (`.psflib`, `.psf2lib`,
+`.ssflib`) are resolved across entries in the same archive, but don't show
+up as tracks. `.7z` support covers Store, LZMA, and LZMA2; encrypted
+archives are not supported.
 
 The breakdown of which chip covers which system or arcade board is in
 [SUPPORTED_SYSTEMS.md](SUPPORTED_SYSTEMS.md).
@@ -219,6 +221,17 @@ today. Within aosdk:
 - The PS1/PS2 engine itself (`psx.c`, `cpuintrf.h`, and related files) is
   distributed under the MAME license, copyright Nicola Salmoria and the
   MAME team.
+
+**zlib** (inflate, vendored alongside aosdk) — Jean-loup Gailly and
+Mark Adler.
+
+**minizip** (`.zip` reading, `deps/minizip`, from zlib 1.3.1) —
+Gilles Vollant, with the Zip64 support by Even Rouault and
+Mathias Svensson.
+
+**7-Zip SDK** (`.7z` reading, `deps/sevenzip`, decode-only subset) —
+Igor Pavlov, public domain.
+
 
 **zlib / minizip** (`.zip` reading, vendored alongside aosdk) —
 Jean-loup Gailly and Mark Adler (zlib), Gilles Vollant (minizip), with
