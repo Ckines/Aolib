@@ -27,18 +27,36 @@ jobs:
       - name: Install build dependencies
         timeout-minutes: 10
         run: |
-          # azure.archive.ubuntu.com (el mirror regional por defecto de los
-          # runners de GitHub) falla o degrada de forma intermitente; el
-          # log de un run fallido mostró archive.ubuntu.com respondiendo
-          # con normalidad mientras azure.* se ignoraba entrada por
-          # entrada. En vez de tolerar el mirror flaky con reintentos, se
-          # evita del todo: apt apunta directo a archive.ubuntu.com/
-          # security.ubuntu.com antes de la primera actualización.
-          # Compatible con ambos formatos de fuentes de Ubuntu 24.04
-          # (deb822 en /etc/apt/sources.list.d/ubuntu.sources, o el
-          # sources.list plano de versiones anteriores).
-          sudo sed -i 's|azure\.archive\.ubuntu\.com|archive.ubuntu.com|g' \
-            /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list 2>/dev/null || true
+          # El sed anterior sobre ubuntu.sources no servía de nada: el log
+          # real de un run fallido empieza con "Get:1 file:/etc/apt/apt-
+          # mirrors.txt Mirrorlist" -- los runners de GitHub (alojados en
+          # Azure) usan el transporte mirror+file: de apt, así que el
+          # dominio "azure.archive.ubuntu.com" que sale en el log no vive
+          # literalmente en ubuntu.sources (que apunta a
+          # mirror+file:/etc/apt/apt-mirrors.txt) sino en ese
+          # apt-mirrors.txt, que el sed nunca tocaba. El fallo tampoco es
+          # una conexión caída -- las descargas SÍ avanzan, solo que muy
+          # despacio (paquete de 35 MB tras 35 MB), lo que no dispara
+          # Acquire::http::Timeout porque ese timeout es de "sin datos
+          # nuevos", no un límite total de transferencia.
+          #
+          # Arreglo real: sustituir ubuntu.sources entero por URIs
+          # literales a archive.ubuntu.com/security.ubuntu.com, sin pasar
+          # por mirror+file: en ningún momento. Con printf, no echo
+          # multilínea, para que cada línea de la sangría quede clara.
+          printf '%s\n' \
+            'Types: deb' \
+            'URIs: http://archive.ubuntu.com/ubuntu/' \
+            'Suites: noble noble-updates noble-backports' \
+            'Components: main universe restricted multiverse' \
+            'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' \
+            '' \
+            'Types: deb' \
+            'URIs: http://security.ubuntu.com/ubuntu/' \
+            'Suites: noble-security' \
+            'Components: main universe restricted multiverse' \
+            'Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg' \
+            | sudo tee /etc/apt/sources.list.d/ubuntu.sources > /dev/null
 
           APT_OPTS="-o Acquire::Retries=3 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15"
           sudo apt-get update -y $APT_OPTS
