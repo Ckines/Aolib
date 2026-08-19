@@ -27,11 +27,19 @@ jobs:
       - name: Install build dependencies
         timeout-minutes: 10
         run: |
-          # azure.archive.ubuntu.com (el mirror por defecto de los runners
-          # de GitHub) falla intermitentemente; sin límites explícitos,
-          # apt reintenta en silencio y el paso se queda "colgado" en vez
-          # de fallar rápido o caer al mirror alternativo. Retries=3 +
-          # timeouts cortos fuerzan ese fallback en segundos, no minutos.
+          # azure.archive.ubuntu.com (el mirror regional por defecto de los
+          # runners de GitHub) falla o degrada de forma intermitente; el
+          # log de un run fallido mostró archive.ubuntu.com respondiendo
+          # con normalidad mientras azure.* se ignoraba entrada por
+          # entrada. En vez de tolerar el mirror flaky con reintentos, se
+          # evita del todo: apt apunta directo a archive.ubuntu.com/
+          # security.ubuntu.com antes de la primera actualización.
+          # Compatible con ambos formatos de fuentes de Ubuntu 24.04
+          # (deb822 en /etc/apt/sources.list.d/ubuntu.sources, o el
+          # sources.list plano de versiones anteriores).
+          sudo sed -i 's|azure\.archive\.ubuntu\.com|archive.ubuntu.com|g' \
+            /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list 2>/dev/null || true
+
           APT_OPTS="-o Acquire::Retries=3 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15"
           sudo apt-get update -y $APT_OPTS
           sudo apt-get install -y $APT_OPTS build-essential
