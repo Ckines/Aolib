@@ -14,6 +14,7 @@ jobs:
   build:
     name: "Build (platform: ${{ matrix.platform }}, psf: ${{ matrix.use_psf }})"
     runs-on: ubuntu-latest
+    timeout-minutes: 30   # red de seguridad: si algo se cuelga, GitHub Actions lo mata y falla claro, en vez de quedarse "colgado" indefinidamente
     strategy:
       matrix:
         platform: [linux, windows]   # "windows" cross-compiles on Linux via mingw-w64
@@ -24,11 +25,18 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Install build dependencies
+        timeout-minutes: 10
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y build-essential
+          # azure.archive.ubuntu.com (el mirror por defecto de los runners
+          # de GitHub) falla intermitentemente; sin límites explícitos,
+          # apt reintenta en silencio y el paso se queda "colgado" en vez
+          # de fallar rápido o caer al mirror alternativo. Retries=3 +
+          # timeouts cortos fuerzan ese fallback en segundos, no minutos.
+          APT_OPTS="-o Acquire::Retries=3 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15"
+          sudo apt-get update -y $APT_OPTS
+          sudo apt-get install -y $APT_OPTS build-essential
           if [ "${{ matrix.platform }}" = "windows" ]; then
-            sudo apt-get install -y g++-mingw-w64-x86-64 binutils-mingw-w64-x86-64
+            sudo apt-get install -y $APT_OPTS g++-mingw-w64-x86-64 binutils-mingw-w64-x86-64
             sudo update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-win32
             sudo update-alternatives --set x86_64-w64-mingw32-gcc /usr/bin/x86_64-w64-mingw32-gcc-win32
           fi
