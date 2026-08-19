@@ -6,9 +6,12 @@
 // RETRO_ENVIRONMENT_GET_VFS_INTERFACE.
 //
 // CUIDADO al adaptar librerías de terceros sobre este bridge:
-// retro_vfs_seek devuelve la NUEVA POSICIÓN, no un código 0/-1 como espera
-// psf_file_callbacks::fseek. Cualquier adaptador DEBE normalizar ese valor
-// explícitamente (ver aosdk_bridge.cpp).
+// retro_vfs_seek() sólo confirma éxito (0) o fallo (-1) -- así lo
+// documenta libretro.h ("@return 0 on success, -1 on failure") -- y NO
+// devuelve la posición resultante. Cualquier adaptador que necesite la
+// posición absoluta (p.ej. sevenzip_vfs_adapter.hpp, que la usa para
+// calcular el tamaño del archivo con Seek(0, SEEK_END)) debe pedirla
+// aparte con stream_tell() tras cada seek exitoso.
 
 #pragma once
 
@@ -102,9 +105,10 @@ public:
         return vfs_->read(static_cast<retro_vfs_file_handle*>(handle), buf, len);
     }
 
-    // CRÍTICO: retro_vfs_seek devuelve la posición resultante, no 0/-1.
-    // Cualquier adaptador de más alto nivel que necesite 0/-1 (psflib) debe
-    // normalizar; esta clase se mantiene fiel a la semántica real del VFS.
+    // retro_vfs_seek() solo confirma éxito (0) / fallo (-1) -- ver la
+    // cabecera de este fichero. Esta clase reenvía ese resultado tal
+    // cual; la posición absoluta resultante, si hace falta, se pide
+    // aparte con stream_tell().
     int64_t stream_seek(void* handle, int64_t offset, int whence) noexcept override {
         if (!vfs_ || !handle) return -1;
         return vfs_->seek(static_cast<retro_vfs_file_handle*>(handle), offset, whence);
