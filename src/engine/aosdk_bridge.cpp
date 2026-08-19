@@ -18,6 +18,7 @@ extern "C" {
 IVFSBridge* AosdkLibResolver::active_vfs_ = nullptr;
 std::string AosdkLibResolver::active_base_dir_;
 AosdkLibResolver::SiblingLookup AosdkLibResolver::active_sibling_lookup_ = nullptr;
+AosdkLibResolver::LogFn AosdkLibResolver::active_log_ = nullptr;
 
 int AosdkLibResolver::get_lib_impl(const char* filename, uint8_t** buffer,
                                     uint64_t* length) noexcept {
@@ -48,7 +49,20 @@ int AosdkLibResolver::get_lib_impl(const char* filename, uint8_t** buffer,
         found = active_vfs_->read_whole_file(full_path, data);
     }
 
-    if (!found) return AO_FAIL;
+    if (!found) {
+        // Causa más frecuente: un .psf/.psf2 suelto que declara un tag
+        // "_lib"/"_libN" cuyo fichero compartido no viaja junto a él en
+        // disco (típico de rips de PS2), donde varias pistas comparten
+        // un único _lib). Sin este aviso, psf_start()/psf2_start()
+        // simplemente devuelven AO_FAIL y lo único que ve el usuario es
+        // "psf_start()/psf2_start() falló", sin decir qué faltaba.
+        if (active_log_) {
+            active_log_("[aolib] no se pudo resolver \"_lib\": " +
+                        std::string(filename) +
+                        " -- ¿falta ese fichero en la misma carpeta que la pista?");
+        }
+        return AO_FAIL;
+    }
 
     // aosdk libera este buffer con free() por su cuenta (ver corlett.c):
     // malloc y no new[], para no mezclar allocators.
