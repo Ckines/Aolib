@@ -55,6 +55,8 @@ GME_CFLAGS := -DBLARGG_LITTLE_ENDIAN=1 -DVGM_YM2612_GENS=1
 
 INCLUDES := -Isrc -Isrc/engine \
             -I$(DEPS_DIR)/aosdk \
+            -I$(DEPS_DIR)/minizip \
+            -I$(DEPS_DIR)/sevenzip \
             -I$(DEPS_DIR)/aosdk/zlib \
             -I$(DEPS_DIR)/game-music-emu/gme \
             -I$(DEPS_DIR)/libvgm
@@ -112,8 +114,13 @@ endif
 # uses -- any sound difference isn't coming from there.
 LIBVGM_CFLAGS  += -DSNDDEV_SN76496 -DEC_SN76496_MAME
 LIBVGM_SOURCES += $(DEPS_DIR)/libvgm/emu/cores/sn764intf.c $(DEPS_DIR)/libvgm/emu/cores/sn76496.c
-LIBVGM_CFLAGS  += -DSNDDEV_YM2413 -DEC_YM2413_MAME
-LIBVGM_SOURCES += $(DEPS_DIR)/libvgm/emu/cores/2413intf.c  $(DEPS_DIR)/libvgm/emu/cores/ym2413.c
+# YM2413 (OPLL): 2413intf.c's own core array lists EC_YM2413_EMU2413
+# FIRST, with an explicit "// default, because it's better than MAME"
+# comment. Both cores are compiled; EMU2413 is what SndEmu_Start2()
+# picks.
+LIBVGM_CFLAGS  += -DSNDDEV_YM2413 -DEC_YM2413_EMU2413 -DEC_YM2413_MAME
+LIBVGM_SOURCES += $(DEPS_DIR)/libvgm/emu/cores/2413intf.c  $(DEPS_DIR)/libvgm/emu/cores/ym2413.c \
+                   $(DEPS_DIR)/libvgm/emu/cores/emu2413.c
 LIBVGM_CFLAGS  += -DSNDDEV_YM2612 -DEC_YM2612_GENS
 LIBVGM_SOURCES += $(DEPS_DIR)/libvgm/emu/cores/2612intf.c  $(DEPS_DIR)/libvgm/emu/cores/ym2612.c
 
@@ -155,11 +162,16 @@ LIBVGM_SOURCES += $(DEPS_DIR)/libvgm/emu/cores/opnintf.c $(DEPS_DIR)/libvgm/emu/
 # Side effect of -DSNDDEV_AY8910: standalone AY8910 VGMs (opcode 0xA0,
 # no YM2203 involved) also work for free.
 
-# YM3812 (OPL2): simple pattern, EC_YM3812_MAME chosen for consistency.
+# YM3812 (OPL2): oplintf.c's own core array lists EC_YM3812_ADLIBEMU
+# FIRST, with "// default, because it's better than MAME". Both cores
+# are compiled; AdLibEmu is what gets picked. adlibemu_opl2.c/opl3.c are
+# two separately-compiled units of the SAME adlibemu_opl_inc.c (OPL2 vs
+# OPL3 via a #define before the #include), not a duplicate.
 # YM3526 (OPL, OPL2's predecessor) shares fmopl.c with YM3812, no extra
 # file needed. Common in Bubble Bobble (DEV_ID 0x0A).
-LIBVGM_CFLAGS  += -DSNDDEV_YM3812 -DEC_YM3812_MAME -DSNDDEV_YM3526
-LIBVGM_SOURCES += $(DEPS_DIR)/libvgm/emu/cores/oplintf.c $(DEPS_DIR)/libvgm/emu/cores/fmopl.c
+LIBVGM_CFLAGS  += -DSNDDEV_YM3812 -DEC_YM3812_ADLIBEMU -DEC_YM3812_MAME -DSNDDEV_YM3526
+LIBVGM_SOURCES += $(DEPS_DIR)/libvgm/emu/cores/oplintf.c $(DEPS_DIR)/libvgm/emu/cores/fmopl.c \
+                   $(DEPS_DIR)/libvgm/emu/cores/adlibemu_opl2.c
 
 # YM2608 (OPNA, PC-8801/9801) and YM2610 (OPNB, Neo Geo): same file as
 # YM2203, but need ymdeltat.c (ADPCM). Both link their internal SSG to
@@ -208,10 +220,14 @@ LIBVGM_CFLAGS  += -DEC_RF5C68_GENS
 LIBVGM_SOURCES += $(DEPS_DIR)/libvgm/emu/cores/scd_pcm.c
 
 # YMF262 (OPL3, AWE/OPL3 PC sound cards). Separate core file from
-# YM3812/YM3526 despite being OPL family. EC_YMF262_MAME chosen for
-# consistency.
-LIBVGM_CFLAGS  += -DSNDDEV_YMF262 -DEC_YMF262_MAME
-LIBVGM_SOURCES += $(DEPS_DIR)/libvgm/emu/cores/262intf.c $(DEPS_DIR)/libvgm/emu/cores/ymf262.c
+# YM3812/YM3526 despite being OPL family. 262intf.c's own core array
+# lists EC_YMF262_ADLIBEMU FIRST, with "// default, because it's better
+# than MAME". Both cores are compiled; AdLibEmu is what gets picked.
+# adlibemu_opl3.c is the OPL3-flavored compile of the same
+# adlibemu_opl_inc.c used for YM3812 above.
+LIBVGM_CFLAGS  += -DSNDDEV_YMF262 -DEC_YMF262_ADLIBEMU -DEC_YMF262_MAME
+LIBVGM_SOURCES += $(DEPS_DIR)/libvgm/emu/cores/262intf.c $(DEPS_DIR)/libvgm/emu/cores/ymf262.c \
+                   $(DEPS_DIR)/libvgm/emu/cores/adlibemu_opl3.c
 
 # YMW258 (MultiPCM, Sega Model 2/3). Simple pattern, no EC_* to choose.
 # NOTE: enabled from the VGM header spec, not yet validated with real
@@ -223,9 +239,13 @@ LIBVGM_SOURCES += $(DEPS_DIR)/libvgm/emu/cores/multipcm.c
 LIBVGM_CFLAGS  += -DSNDDEV_YMZ280B
 LIBVGM_SOURCES += $(DEPS_DIR)/libvgm/emu/cores/ymz280b.c
 
-# C6280 (HuC6280, PC Engine/TurboGrafx-16). Simple pattern.
-LIBVGM_CFLAGS  += -DSNDDEV_C6280 -DEC_C6280_MAME
-LIBVGM_SOURCES += $(DEPS_DIR)/libvgm/emu/cores/c6280intf.c $(DEPS_DIR)/libvgm/emu/cores/c6280_mame.c
+# C6280 (HuC6280, PC Engine/TurboGrafx-16). c6280intf.c's own core array
+# lists EC_C6280_OOTAKE FIRST -- first-is-default, same convention as
+# every other multi-core chip in this file. Both cores are compiled;
+# Ootake is what gets picked.
+LIBVGM_CFLAGS  += -DSNDDEV_C6280 -DEC_C6280_OOTAKE -DEC_C6280_MAME
+LIBVGM_SOURCES += $(DEPS_DIR)/libvgm/emu/cores/c6280intf.c $(DEPS_DIR)/libvgm/emu/cores/c6280_mame.c \
+                   $(DEPS_DIR)/libvgm/emu/cores/Ootake_PSG.c
 
 # ES5503 (Ensoniq DOC, Apple IIGS / some Taito arcade). Single self-
 # contained file, no LinkDevice.
@@ -247,9 +267,28 @@ LIBVGM_CFLAGS  += -DSNDDEV_32X_PWM
 LIBVGM_SOURCES += $(DEPS_DIR)/libvgm/emu/cores/pwm.c
 
 # NES APU as a direct VGM chip (distinct from libgme's native .nsf
-# support). EC_NES_MAME chosen for consistency.
-LIBVGM_CFLAGS  += -DSNDDEV_NES_APU -DEC_NES_MAME
-LIBVGM_SOURCES += $(DEPS_DIR)/libvgm/emu/cores/nesintf.c $(DEPS_DIR)/libvgm/emu/cores/nes_apu.c
+# support).
+#
+# BOTH cores are compiled, and the order matters: nesintf.c lists
+# NSFPlay before MAME in sndDev_NES_APU's core array, so NSFPlay is what
+# SndEmu_Start2() picks by default. Compiling EC_NES_MAME alone does not
+# error out -- it just silently leaves MAME as the only candidate, which
+# is upstream's *fallback*, not its default. MAME's core renders the
+# triangle/DMC channels with audible clicking on real rips (e.g. the
+# vgmrips Zelda NES pack); NSFPlay's does not. Every other multi-core
+# chip in this file follows the same rule: compile the core the chip's
+# own intf.c lists first, not whichever seems simplest.
+#
+# np_nes_fds.c + EC_NES_NSFP_FDS covers the FDS expansion audio
+# (Famicom Disk System). It is a separate core inside the same device:
+# without it, a VGM that declares the FDS gets the APU but silence on
+# the FDS channel.
+LIBVGM_CFLAGS  += -DSNDDEV_NES_APU -DEC_NES_NSFPLAY -DEC_NES_NSFP_FDS -DEC_NES_MAME
+LIBVGM_SOURCES += $(DEPS_DIR)/libvgm/emu/cores/nesintf.c \
+                  $(DEPS_DIR)/libvgm/emu/cores/nes_apu.c \
+                  $(DEPS_DIR)/libvgm/emu/cores/np_nes_apu.c \
+                  $(DEPS_DIR)/libvgm/emu/cores/np_nes_dmc.c \
+                  $(DEPS_DIR)/libvgm/emu/cores/np_nes_fds.c
 
 # Virtual Boy VSU. Single self-contained file (symbol is sndDev_VBoyVSU,
 # mind the capitalization). Mednafen-derived core.
@@ -284,8 +323,55 @@ CORE_SOURCES := src/libretro.cpp \
 
 # ─── zlib (vendored with aosdk): ALWAYS compiled ─────────────────────────
 # Needed for both PSF (corlett.c uses compress/uncompress) and .zip
-# (unzip.c/ioapi.c) -- the latter is needed even with USE_PSF_ENGINE=0.
+# (the minizip sources below inflate with it) -- required even with
+# USE_PSF_ENGINE=0.
 ZLIB_SOURCES := $(wildcard $(DEPS_DIR)/aosdk/zlib/*.c)
+
+# ─── minizip 1.3.1 (vendored separately from zlib): ALWAYS compiled ──────
+# The minizip that shipped inside aosdk's zlib was version 1.00 (2003),
+# with no Zip64 support: it rejects any archive using the Zip64 central
+# directory, which several archivers emit even for small files. Replaced
+# with the version from zlib 1.3.1 contrib/minizip; see
+# $(DEPS_DIR)/minizip/VENDOR.md for the vendoring notes and the local
+# patch. -I$(DEPS_DIR)/minizip comes BEFORE -I$(DEPS_DIR)/aosdk/zlib in
+# INCLUDES so that "unzip.h"/"ioapi.h" resolve here.
+MINIZIP_SOURCES := \
+  $(DEPS_DIR)/minizip/unzip.c \
+  $(DEPS_DIR)/minizip/ioapi.c
+
+# ─── 7-Zip SDK (vendored, decode-only subset): ALWAYS compiled ──────────
+# Reads .7z archives directly (sevenzip_playlist.hpp), the same way
+# minizip reads .zip: the core opens the container itself through the VFS
+# and enumerates supported entries. Required even with USE_PSF_ENGINE=0,
+# same rationale as minizip -- a .7z can just as well hold VGM/SPC/etc.
+#
+# Public-domain C sources from the official 7-Zip SDK (Igor Pavlov); see
+# $(DEPS_DIR)/sevenzip/VENDOR.md for exactly which files were taken and
+# which were deliberately left out (7zFile.c: fopen()-based, forbidden by
+# this project's I/O rule, same reasoning as minizip's ioapi.c patch).
+#
+# Bra86.c/BraIA64.c/Bcj2.c: branch-filter and BCJ2 decoders. Not needed
+# for the audio-only content this core actually plays, but 7zDec.c
+# references them unconditionally for any solid block that used those
+# filters (mainly .exe-heavy 7z archives), so they're included for
+# correctness on archives this core didn't create.
+SEVENZIP_SOURCES := \
+  $(DEPS_DIR)/sevenzip/7zAlloc.c \
+  $(DEPS_DIR)/sevenzip/7zArcIn.c \
+  $(DEPS_DIR)/sevenzip/7zBuf.c \
+  $(DEPS_DIR)/sevenzip/7zBuf2.c \
+  $(DEPS_DIR)/sevenzip/7zCrc.c \
+  $(DEPS_DIR)/sevenzip/7zCrcOpt.c \
+  $(DEPS_DIR)/sevenzip/7zDec.c \
+  $(DEPS_DIR)/sevenzip/7zStream.c \
+  $(DEPS_DIR)/sevenzip/Bcj2.c \
+  $(DEPS_DIR)/sevenzip/Bra.c \
+  $(DEPS_DIR)/sevenzip/Bra86.c \
+  $(DEPS_DIR)/sevenzip/BraIA64.c \
+  $(DEPS_DIR)/sevenzip/CpuArch.c \
+  $(DEPS_DIR)/sevenzip/Delta.c \
+  $(DEPS_DIR)/sevenzip/Lzma2Dec.c \
+  $(DEPS_DIR)/sevenzip/LzmaDec.c
 
 # PSF/SSF container parser + utility hash table, shared by all three
 # aosdk engines. corlett.c is the format parser; utils.c provides the
@@ -352,7 +438,7 @@ GME_EXT_SOURCES := $(DEPS_DIR)/game-music-emu/gme/ext/emu2413.c
 # lives outside the plain gme/*.cpp wildcard.
 # libgme is LGPL-2.1, no usage restriction -- see THIRD-PARTY-LICENSES.md.
 
-OBJS := $(CORE_SOURCES:.cpp=.o) $(GME_SOURCES:.cpp=.o) $(GME_EXT_SOURCES:.c=.o) $(ZLIB_SOURCES:.c=.o) $(LIBVGM_OBJS)
+OBJS := $(CORE_SOURCES:.cpp=.o) $(GME_SOURCES:.cpp=.o) $(GME_EXT_SOURCES:.c=.o) $(ZLIB_SOURCES:.c=.o) $(MINIZIP_SOURCES:.c=.o) $(SEVENZIP_SOURCES:.c=.o) $(LIBVGM_OBJS)
 
 # AOSDK_CFLAGS applies ALWAYS, not just when USE_PSF_ENGINE=1: even
 # test-f2 (isolated parsing) compiles aosdk files and needs -DLSB_FIRST=1.
@@ -390,7 +476,13 @@ DEPFLAGS := -MMD -MP
 #
 # 'dist' builds Linux only. Windows is a separate target since it needs
 # `make clean` in between and the MinGW toolchain isn't always available.
-dist: clean
+# `clean` is invoked from the RECIPE, not listed as a prerequisite: as a
+# prerequisite it would run at most once per make invocation, so
+# `make dist-all` would hand the Windows link the Linux .o files left by
+# `dist` -- the exact stale-object trap warned about at the top of this
+# file, and it fails with unresolved libstdc++ symbols.
+dist:
+	$(MAKE) clean
 	$(MAKE) all USE_PSF_ENGINE=1
 	mkdir -p dist-linux
 	cp aolib_libretro.so dist-linux/aolib_libretro.so
@@ -398,7 +490,8 @@ dist: clean
 	@echo "dist-linux/aolib_libretro.{so,info} updated (info copied from repo root)."
 	@ls -la dist-linux/aolib_libretro.so dist-linux/aolib_libretro.info
 
-dist-windows: clean
+dist-windows:
+	$(MAKE) clean
 	$(MAKE) all USE_PSF_ENGINE=1 PLATFORM=windows
 	mkdir -p dist-windows
 	cp aolib_libretro.dll dist-windows/aolib_libretro.dll
