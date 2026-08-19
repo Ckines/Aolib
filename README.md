@@ -27,6 +27,69 @@ The breakdown of which chip covers which system or arcade board is in
 [SUPPORTED_SYSTEMS.md](SUPPORTED_SYSTEMS.md).
 
 ![AOLIB deck screenshot](aolibdeck.png) ![AOLIB deck screenshot](aolibdeck1.png)
+
+## Controls
+
+| Button | Action |
+|--------|--------|
+| Up / Down | Move the cursor through the list (repeats on hold) |
+| Left / Right | Move focus across the deck |
+| B | Plays the track under the cursor |
+| A | Activates the focused deck button |
+| L / R | Volume down / up |
+| Start | Pause / resume |
+
+The deck has eight buttons: stop, previous track, play/pause, fast
+forward (hold to use), next track, volume, reverb, and repeat mode.
+Volume, reverb, and repeat stay lit, with an orange border, until
+toggled again.
+
+## Core options
+
+| Option | Values | Effect |
+|--------|--------|--------|
+| Loop forever at end of album | disabled / enabled | Restarts from the beginning once the last track ends |
+| Fade duration (s) | 8, 0, 1, 2, 3, 5, 10 | Length of the final fade-out |
+| SPU Reverb (PSF2 only) | enabled / disabled | Reverb of the emulated PlayStation SPU |
+| Player Reverb Amount | 1, 2, 3 | Level (35%, 50%, 65%) of the player's own reverb |
+
+The player's reverb is turned on and off **only** with the REB button on
+the deck; the menu just sets the level it'll play at. These are two
+different things: the SPU reverb is part of how the console actually
+sounded, so it ships enabled; the player's reverb is an effect added on
+top, and ships disabled.
+
+## Building / Installation
+
+Requires GNU Make and a C++17 compiler. All dependencies are vendored
+under `deps/`; nothing else needs to be installed.
+
+```sh
+make all USE_PSF_ENGINE=1              # Linux   -> aolib_libretro.so
+make all USE_PSF_ENGINE=1 PLATFORM=windows   # Windows -> aolib_libretro.dll
+```
+
+Cross-compiling for Windows requires `x86_64-w64-mingw32-g++`.
+
+Run `make clean` when switching platforms: object files are named the
+same on both, and Make has no way of knowing the compiler changed.
+
+Without `USE_PSF_ENGINE=1` the core builds without the aosdk engines, and
+the PSF and SSF formats are left out.
+
+For releases, always use the packaging targets instead of copying
+binaries by hand:
+
+```sh
+make dist          # builds from scratch and updates dist-linux/
+make dist-windows  # same, for dist-windows/
+make dist-all      # both platforms
+```
+
+`info` lives at the repo root (`aolib_libretro.info`, single source of
+truth) and is copied into `dist-linux/`/`dist-windows/` by the packaging
+targets. Edit the root copy, not the ones under `dist/`.
+
 ## Architecture
 
 Three distinct lifetime layers: `CoreContext` is rebuilt on every
@@ -116,69 +179,6 @@ what's actually heard, not what the engine produced.
                          same std::vector<ZipEntry> -- downstream code (duration probing,
                          track switching) never distinguishes .zip from .7z.
 ```
-
-## Building / Installation
-
-Requires GNU Make and a C++17 compiler. All dependencies are vendored
-under `deps/`; nothing else needs to be installed.
-
-```sh
-make all USE_PSF_ENGINE=1              # Linux   -> aolib_libretro.so
-make all USE_PSF_ENGINE=1 PLATFORM=windows   # Windows -> aolib_libretro.dll
-```
-
-Cross-compiling for Windows requires `x86_64-w64-mingw32-g++`.
-
-Run `make clean` when switching platforms: object files are named the
-same on both, and Make has no way of knowing the compiler changed.
-
-Without `USE_PSF_ENGINE=1` the core builds without the aosdk engines, and
-the PSF and SSF formats are left out.
-
-For releases, always use the packaging targets instead of copying
-binaries by hand:
-
-```sh
-make dist          # builds from scratch and updates dist-linux/
-make dist-windows  # same, for dist-windows/
-make dist-all      # both platforms
-```
-
-`info` lives at the repo root (`aolib_libretro.info`, single source of
-truth) and is copied into `dist-linux/`/`dist-windows/` by the packaging
-targets. Edit the root copy, not the ones under `dist/`.
-
-## Controls
-
-| Button | Action |
-|--------|--------|
-| Up / Down | Move the cursor through the list (repeats on hold) |
-| Left / Right | Move focus across the deck |
-| B | Plays the track under the cursor |
-| A | Activates the focused deck button |
-| L / R | Volume down / up |
-| Start | Pause / resume |
-
-The deck has eight buttons: stop, previous track, play/pause, fast
-forward (hold to use), next track, volume, reverb, and repeat mode.
-Volume, reverb, and repeat stay lit, with an orange border, until
-toggled again.
-
-## Core options
-
-| Option | Values | Effect |
-|--------|--------|--------|
-| Loop forever at end of album | disabled / enabled | Restarts from the beginning once the last track ends |
-| Fade duration (s) | 8, 0, 1, 2, 3, 5, 10 | Length of the final fade-out |
-| SPU Reverb (PSF2 only) | enabled / disabled | Reverb of the emulated PlayStation SPU |
-| Player Reverb Amount | 1, 2, 3 | Level (35%, 50%, 65%) of the player's own reverb |
-
-The player's reverb is turned on and off **only** with the REB button on
-the deck; the menu just sets the level it'll play at. These are two
-different things: the SPU reverb is part of how the console actually
-sounded, so it ships enabled; the player's reverb is an effect added on
-top, and ships disabled.
-
 ## Licensing
 
 The project's own code belongs to Ckines, under GPL-2.0-or-later. The
