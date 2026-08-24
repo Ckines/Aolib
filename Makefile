@@ -607,22 +607,7 @@ all: $(TARGET)
 $(TARGET): $(OBJS)
 	$(CXX) $(SANFLAGS) -shared -o $@ $^ $(LDFLAGS)
 
-# -MMD -MP: per-object header dependency tracking. Without it, editing a
-# .hpp doesn't trigger recompilation and the link reuses stale objects.
-#
-# Los .d hay que INCLUIRLOS, si no se generan y no los lee nadie: eso es
-# justo lo que pasaba, y un cambio en src/*.hpp -- que es donde vive casi
-# todo el core, header-only -- enlazaba objetos viejos SIN avisar. Medido:
-# añadir ".asf" a vgmstream_extensions.hpp y reconstruir dejaba la .dll
-# exactamente igual. Va aquí abajo porque $(OBJS) no está completo hasta
-# después del bloque de AOSDK.
--include $(OBJS:.o=.d)
 
-%.o: %.cpp
-	$(CXX) $(CXXFLAGS) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
-
-%.o: %.c
-	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
 
 # ═══════════════════════ 'make dist' ═══════════════════════════════
 #
