@@ -23,11 +23,56 @@ else
 CXX ?= g++
 CC  ?= gcc
 LIB_EXT := .so
+# libxmp-lite usa pow/log/floor (period.c, filter.c). En Linux libm es una
+# biblioteca aparte; enlazarla explícitamente evita depender de que el
+# frontend ya la tenga cargada.
+LDFLAGS += -lm
 AOSDK_CFLAGS := -DLSB_FIRST=1 -DLONG_IS_64BIT=1 -DPATH_MAX=1024 -DHAS_PSXCPU=1
 endif
 
+# -MMD -MP: per-object header dependency tracking. Without it, editing a
+# .hpp doesn't trigger recompilation and the link reuses stale objects.
+# Defined here (not next to the %.o rules) because the vgmstream pattern
+# rule further down also uses it and make expands it at rule-definition
+# time.
+DEPFLAGS := -MMD -MP
+
 CXXFLAGS := -std=c++17 -Wall -Wextra -fPIC -O2
 CFLAGS   := -std=c99 -Wall -fPIC -O2 -DNOGUI=1
+
+# ─── link-time size optimization ────────────────────────────────────────
+#
+# -ffunction-sections + --gc-sections drop every function no symbol chain
+# reaches from the exported retro_* entry points. -fvisibility=hidden is
+# what makes that chain short: without it every non-static symbol is
+# exported and therefore a GC root, and --gc-sections keeps almost
+# everything.
+#
+# -fdata-sections is LINUX ONLY, and this is NOT a style choice.
+#
+# On PE-COFF (MinGW) GCC emits uninitialized arrays into named .data$<sym>
+# sections (PROGBITS, file-backed) instead of .bss (NOBITS, zero-filled at
+# load). Every large zeroed table in aosdk/libvgm then lands physically in
+# the DLL. Measured on this tree, GCC 13.2, identical sources and flags
+# except this one:
+#
+#   with    -fdata-sections:  11,698,688 bytes (stripped .dll)
+#   without -fdata-sections:   1,775,104 bytes (stripped .dll)
+#
+# 6.6x. Originally found on GCC 14.2; reproduced on 13.2, so treat it as
+# stable MinGW behaviour and not a single-version regression. ELF is
+# unaffected: there -fdata-sections keeps .bss as NOBITS and is a net win.
+ifeq ($(PLATFORM),windows)
+SIZEFLAGS_C   := -ffunction-sections -fvisibility=hidden
+SIZEFLAGS_CXX := -ffunction-sections -fvisibility=hidden -fvisibility-inlines-hidden
+else
+SIZEFLAGS_C   := -ffunction-sections -fdata-sections -fvisibility=hidden
+SIZEFLAGS_CXX := -ffunction-sections -fdata-sections -fvisibility=hidden -fvisibility-inlines-hidden
+endif
+
+CXXFLAGS += $(SIZEFLAGS_CXX)
+CFLAGS   += $(SIZEFLAGS_C)
+LDFLAGS  += -Wl,--gc-sections
 
 # Optional: `make <target> SANFLAGS="-fsanitize=address,undefined -g"`.
 # Empty by default.
@@ -59,6 +104,7 @@ INCLUDES := -Isrc -Isrc/engine \
             -I$(DEPS_DIR)/sevenzip \
             -I$(DEPS_DIR)/aosdk/zlib \
             -I$(DEPS_DIR)/game-music-emu/gme \
+            -I$(DEPS_DIR)/libxmp-lite/include \
             -I$(DEPS_DIR)/libvgm
 
 # ─── libvgm: VGM/VGZ backend ────────────────────────────────────────────
@@ -339,6 +385,13 @@ MINIZIP_SOURCES := \
   $(DEPS_DIR)/minizip/unzip.c \
   $(DEPS_DIR)/minizip/ioapi.c
 
+# UNZ_BUFSIZE: 16 KiB por defecto, o sea que unzip.c pide el fichero a
+# trozos de 16 KiB. Igualado al bloque de lectura anticipada de
+# src/zip_vfs_adapter.hpp (kZipReadBlock) para que sus peticiones se
+# sirvan DIRECTAS, sin rellenar la caché ni sobreleer. Se define aquí y no
+# en unzip.c para no tocar la fuente vendorizada.
+CFLAGS += -DUNZ_BUFSIZE=65536
+
 # ─── 7-Zip SDK (vendored, decode-only subset): ALWAYS compiled ──────────
 # Reads .7z archives directly (sevenzip_playlist.hpp), the same way
 # minizip reads .zip: the core opens the container itself through the VFS
@@ -433,12 +486,109 @@ GME_SOURCES := $(filter-out %/Ym2612_Nuked.cpp %/Ym2612_MAME.cpp, \
 # linking an executable (tests) with unresolved symbols from the unused
 # backends -- a shared library wouldn't complain, since it tolerates
 # unresolved symbols by default.
+# ─── libxmp-lite: MOD/S3M/XM/IT ─────────────────────────────────────────
+# Vendorizado como fuentes, igual que el resto: sin CMake, sin .a externo,
+# sin paso de build aparte. Lista completa y ordenada tomada de
+# cmake/libxmp-sources.cmake del tarball oficial; ver
+# $(DEPS_DIR)/libxmp-lite/VENDOR.md.
+#
+# DOS defines, y las DOS hacen falta:
+#
+# -DLIBXMP_CORE_PLAYER: es lo que convierte libxmp en libxmp-lite. Recorta
+# a cuatro loaders y, lo importante aquí, deja fuera la rama de mod_load.c
+# que abre ficheros de instrumento sueltos con fopen(). Sin ella habría un
+# camino de E/S que no pasa por el VFS de Libretro.
+#
+# -DLIBXMP_STATIC: TIENE que aplicar también a src/libretro.cpp y a
+# src/engine/xmp_engine.hpp, no solo a los .c de aquí. Sin ella, xmp.h
+# declara cada símbolo __declspec(dllimport) en el build de MinGW y el
+# enlazado del .dll falla con referencias __imp_xmp_*. Por eso va en
+# XMP_CFLAGS y XMP_CFLAGS se añade a CXXFLAGS, no solo a CFLAGS.
+# xmp_engine.hpp lleva un #error de guardia por si alguien las separa.
+XMP_CFLAGS := -DLIBXMP_CORE_PLAYER -DLIBXMP_STATIC
+
+XMP_SOURCES := \
+  $(DEPS_DIR)/libxmp-lite/src/virtual.c      $(DEPS_DIR)/libxmp-lite/src/format.c \
+  $(DEPS_DIR)/libxmp-lite/src/period.c       $(DEPS_DIR)/libxmp-lite/src/player.c \
+  $(DEPS_DIR)/libxmp-lite/src/read_event.c   $(DEPS_DIR)/libxmp-lite/src/misc.c \
+  $(DEPS_DIR)/libxmp-lite/src/dataio.c       $(DEPS_DIR)/libxmp-lite/src/lfo.c \
+  $(DEPS_DIR)/libxmp-lite/src/scan.c         $(DEPS_DIR)/libxmp-lite/src/control.c \
+  $(DEPS_DIR)/libxmp-lite/src/filter.c       $(DEPS_DIR)/libxmp-lite/src/effects.c \
+  $(DEPS_DIR)/libxmp-lite/src/flow.c         $(DEPS_DIR)/libxmp-lite/src/mixer.c \
+  $(DEPS_DIR)/libxmp-lite/src/mix_all.c      $(DEPS_DIR)/libxmp-lite/src/load_helpers.c \
+  $(DEPS_DIR)/libxmp-lite/src/load.c         $(DEPS_DIR)/libxmp-lite/src/filetype.c \
+  $(DEPS_DIR)/libxmp-lite/src/hio.c          $(DEPS_DIR)/libxmp-lite/src/smix.c \
+  $(DEPS_DIR)/libxmp-lite/src/memio.c        $(DEPS_DIR)/libxmp-lite/src/rng.c \
+  $(DEPS_DIR)/libxmp-lite/src/win32.c \
+  $(DEPS_DIR)/libxmp-lite/src/loaders/common.c \
+  $(DEPS_DIR)/libxmp-lite/src/loaders/itsex.c \
+  $(DEPS_DIR)/libxmp-lite/src/loaders/sample.c \
+  $(DEPS_DIR)/libxmp-lite/src/loaders/xm_load.c \
+  $(DEPS_DIR)/libxmp-lite/src/loaders/mod_load.c \
+  $(DEPS_DIR)/libxmp-lite/src/loaders/s3m_load.c \
+  $(DEPS_DIR)/libxmp-lite/src/loaders/it_load.c
+# win32.c compila a objeto vacío fuera de Windows (todo su contenido está
+# bajo #ifdef _WIN32); se lista igual para no bifurcar la lista por
+# plataforma, como sí hay que hacer con StrUtils-CPConv de libvgm.
+# libxmp-lite es MIT -- ver THIRD-PARTY-LICENSES.md.
+
 GME_EXT_SOURCES := $(DEPS_DIR)/game-music-emu/gme/ext/emu2413.c
 # Nes_Vrc7_Apu.cpp (Konami VRC7 FM synth) depends on emu2413.c, which
 # lives outside the plain gme/*.cpp wildcard.
 # libgme is LGPL-2.1, no usage restriction -- see THIRD-PARTY-LICENSES.md.
 
-OBJS := $(CORE_SOURCES:.cpp=.o) $(GME_SOURCES:.cpp=.o) $(GME_EXT_SOURCES:.c=.o) $(ZLIB_SOURCES:.c=.o) $(MINIZIP_SOURCES:.c=.o) $(SEVENZIP_SOURCES:.c=.o) $(LIBVGM_OBJS)
+# ─── vgmstream: XA/streaming backend (USE_VGMSTREAM=1) ──────────────────
+#
+# Vendored WHOLE (all 663 .c), on purpose. The size lever is NOT which
+# files ship, it is which entries stay in init_vgmstream_functions[] in
+# deps/vgmstream/vgmstream_init.c: --gc-sections drops every parser no
+# table entry reaches. Measured on this tree: pruning meta/ from 454 to 2
+# files produced a BYTE-IDENTICAL stripped .so. Deleting sources would
+# only cost re-pruning work on every upstream update.
+#
+# -std=gnu99, not c99: meta/adx.c uses M_PI/M_SQRT2, which strict c99
+# hides behind __STRICT_ANSI__.
+#
+# base/streamfile_stdio.c is EXCLUDED (project rule: no fopen). It is
+# replaced by base/streamfile_stdio_stub.c, which is not optional:
+# base/api_libsf.c still references open_stdio_streamfile{,_by_file}.
+# A Linux .so links fine without them (shared objects tolerate undefined
+# symbols); a MinGW .dll does NOT and fails the link.
+#
+# No VGM_USE_* define is set, so no external codec library is pulled in;
+# vgmstream then needs only libc + libm.
+VGMSTREAM_DIR     := $(DEPS_DIR)/vgmstream
+# SELF-CONTAINED flag set, deliberately NOT the project-wide $(CFLAGS).
+# CFLAGS carries -D_POSIX_C_SOURCE=200809L (required by libvgm, see the
+# libvgm block), and that define switches glibc OFF of _DEFAULT_SOURCE,
+# which is what declares M_PI/M_SQRT2 in <math.h>. meta/adx.c uses both,
+# so inheriting CFLAGS makes vgmstream fail to compile. Isolating the
+# flags also keeps libvgm's and vgmstream's defines from leaking into
+# each other.
+VGMSTREAM_CFLAGS  := -std=gnu99 -Wall -fPIC -O2 -DMINIZ_NO_STDIO \
+                     $(SIZEFLAGS_C) $(SANFLAGS)
+VGMSTREAM_SOURCES := $(shell find $(VGMSTREAM_DIR) -name '*.c')
+VGMSTREAM_OBJS    := $(VGMSTREAM_SOURCES:.c=.o)
+
+ifeq ($(USE_VGMSTREAM),1)
+INCLUDES += -I$(VGMSTREAM_DIR) -I$(VGMSTREAM_DIR)/util
+CXXFLAGS += -DAOLIB_WITH_VGMSTREAM=1
+VGMSTREAM_ALL_OBJS := $(VGMSTREAM_OBJS) src/engine/vgmstream_api.o
+else
+VGMSTREAM_ALL_OBJS :=
+endif
+
+# vgmstream .c files need their own -std; the generic %.o rule would use
+# the project-wide CFLAGS (-std=c99) and break meta/adx.c.
+$(VGMSTREAM_DIR)/%.o: $(VGMSTREAM_DIR)/%.c
+	$(CC) $(VGMSTREAM_CFLAGS) $(DEPFLAGS) -I$(VGMSTREAM_DIR) -I$(VGMSTREAM_DIR)/util -c $< -o $@
+
+OBJS := $(CORE_SOURCES:.cpp=.o) $(GME_SOURCES:.cpp=.o) $(GME_EXT_SOURCES:.c=.o) $(ZLIB_SOURCES:.c=.o) $(MINIZIP_SOURCES:.c=.o) $(SEVENZIP_SOURCES:.c=.o) $(LIBVGM_OBJS) $(XMP_SOURCES:.c=.o) $(VGMSTREAM_ALL_OBJS)
+
+# Ambas familias, no solo CFLAGS: libretro.cpp incluye xmp_engine.hpp y
+# necesita LIBXMP_STATIC. Ver el bloque de libxmp-lite más arriba.
+CXXFLAGS += $(XMP_CFLAGS)
+CFLAGS   += $(XMP_CFLAGS)
 
 # AOSDK_CFLAGS applies ALWAYS, not just when USE_PSF_ENGINE=1: even
 # test-f2 (isolated parsing) compiles aosdk files and needs -DLSB_FIRST=1.
@@ -459,7 +609,14 @@ $(TARGET): $(OBJS)
 
 # -MMD -MP: per-object header dependency tracking. Without it, editing a
 # .hpp doesn't trigger recompilation and the link reuses stale objects.
-DEPFLAGS := -MMD -MP
+#
+# Los .d hay que INCLUIRLOS, si no se generan y no los lee nadie: eso es
+# justo lo que pasaba, y un cambio en src/*.hpp -- que es donde vive casi
+# todo el core, header-only -- enlazaba objetos viejos SIN avisar. Medido:
+# añadir ".asf" a vgmstream_extensions.hpp y reconstruir dejaba la .dll
+# exactamente igual. Va aquí abajo porque $(OBJS) no está completo hasta
+# después del bloque de AOSDK.
+-include $(OBJS:.o=.d)
 
 %.o: %.cpp
 	$(CXX) $(CXXFLAGS) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
@@ -481,20 +638,28 @@ DEPFLAGS := -MMD -MP
 # `make dist-all` would hand the Windows link the Linux .o files left by
 # `dist` -- the exact stale-object trap warned about at the top of this
 # file, and it fails with unresolved libstdc++ symbols.
+# USE_VGMSTREAM is passed through so `make dist USE_VGMSTREAM=1` produces
+# the shipped configuration; without it dist builds the core as before.
 dist:
 	$(MAKE) clean
-	$(MAKE) all USE_PSF_ENGINE=1
+	$(MAKE) all USE_PSF_ENGINE=1 USE_VGMSTREAM=$(USE_VGMSTREAM)
 	mkdir -p dist-linux
 	cp aolib_libretro.so dist-linux/aolib_libretro.so
+	# strip ONLY here, never on the working build: `make all` must keep its
+	# symbols so nm/addr2line still work when debugging a crash report.
+	strip --strip-all dist-linux/aolib_libretro.so
 	cp aolib_libretro.info dist-linux/aolib_libretro.info
 	@echo "dist-linux/aolib_libretro.{so,info} updated (info copied from repo root)."
 	@ls -la dist-linux/aolib_libretro.so dist-linux/aolib_libretro.info
 
 dist-windows:
 	$(MAKE) clean
-	$(MAKE) all USE_PSF_ENGINE=1 PLATFORM=windows
+	$(MAKE) all USE_PSF_ENGINE=1 PLATFORM=windows USE_VGMSTREAM=$(USE_VGMSTREAM)
 	mkdir -p dist-windows
 	cp aolib_libretro.dll dist-windows/aolib_libretro.dll
+	# MinGW strip, not the host one: the host strip does not understand
+	# PE-COFF and either refuses the file or corrupts the export table.
+	x86_64-w64-mingw32-strip --strip-all dist-windows/aolib_libretro.dll
 	cp aolib_libretro.info dist-windows/aolib_libretro.info
 	@echo "dist-windows/aolib_libretro.{dll,info} updated (info copied from repo root)."
 	@ls -la dist-windows/aolib_libretro.dll dist-windows/aolib_libretro.info
@@ -503,14 +668,118 @@ dist-all: dist dist-windows
 
 clean:
 	rm -f $(OBJS) $(TARGET)
+	rm -f $(VGMSTREAM_OBJS) src/engine/vgmstream_api.o
+	# StrUtils-CPConv_{Win,IConv}.o: solo UNO de los dos está en $(OBJS)
+	# según PLATFORM, así que `make clean` en Linux dejaba atrás el objeto
+	# de Windows y viceversa. Ese residuo se cuela en el enlace siguiente y
+	# da "undefined reference" o un objeto de la arquitectura equivocada.
+	# Se borran los dos siempre, independientemente de la plataforma.
+	rm -f $(DEPS_DIR)/libvgm/utils/StrUtils-CPConv_Win.o \
+	      $(DEPS_DIR)/libvgm/utils/StrUtils-CPConv_IConv.o
 	rm -f $(AOSDK_ENGINE_SOURCES:.c=.o) src/engine/aosdk_host_glue.o
 	rm -f deps/libvgm/emu/cores/c6280intf.o
 	rm -f deps/libvgm/emu/cores/es5506.o
 	rm -f deps/game-music-emu/gme/Ym2612_MAME.o deps/game-music-emu/gme/Ym2612_Nuked.o
+	rm -f tests/f21_xmp_engine tests/f22_vgmstream_formats tests/f23_vgmstream_vfs tests/f24_vgmstream_engine tests/f25_vgmstream_dispatch tests/z03_zip_end_to_end
 	# .d files from -MMD live next to each .o
 	find src tests deps -name '*.d' -delete 2>/dev/null || true
 
-.PHONY: all clean dist dist-windows dist-all
+# ─── test del backend libxmp-lite ───────────────────────────────────────
+# Necesita módulos reales; se le pasan por MODULES=. Verifica metadatos,
+# tamaño de bloque, reinicio bit-perfect (FNV-1a) y que el EOT cae en el
+# frame calculado.
+test-f21: tests/f21_xmp_engine.cpp $(XMP_SOURCES)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -o tests/f21_xmp_engine \
+	    tests/f21_xmp_engine.cpp $(XMP_SOURCES) -lm
+	./tests/f21_xmp_engine $(MODULES)
+
+# ─── test del backend vgmstream ─────────────────────────────────────────
+# Necesita ficheros reales; se le pasan por STREAMS=. Sirve cada uno por
+# un libstreamfile_t sobre memoria (sin stdio, igual que hará el adaptador
+# del VFS) y verifica detección, decodificación no silenciosa y reinicio
+# bit-perfect.
+#
+# Las fuentes de vgmstream se compilan aparte con VGMSTREAM_CFLAGS: pasar
+# .c por $(CXX) rompe (`or` es palabra reservada en C++, y malloc necesita
+# cast), y $(CFLAGS) oculta M_PI. Ver deps/vgmstream/VENDOR.md.
+test-f22: tests/f22_vgmstream_formats.cpp $(VGMSTREAM_OBJS) src/engine/vgmstream_api.o
+	$(CXX) $(CXXFLAGS) -I$(VGMSTREAM_DIR) -I$(VGMSTREAM_DIR)/util \
+	    -o tests/f22_vgmstream_formats \
+	    tests/f22_vgmstream_formats.cpp $(VGMSTREAM_OBJS) \
+	    src/engine/vgmstream_api.o -lm
+	./tests/f22_vgmstream_formats $(STREAMS)
+
+# ─── test del adaptador VFS de vgmstream ────────────────────────────────
+# Usa un IVFSBridge falso que reproduce las dos trampas de retro_vfs:
+# seek() devuelve 0/-1 y no la posición, y read() puede quedarse corto.
+# Comprueba que disco y memoria dan audio bit-idéntico.
+test-f23: tests/f23_vgmstream_vfs.cpp $(VGMSTREAM_OBJS) src/engine/vgmstream_api.o
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -I$(VGMSTREAM_DIR) -I$(VGMSTREAM_DIR)/util \
+	    -o tests/f23_vgmstream_vfs \
+	    tests/f23_vgmstream_vfs.cpp $(VGMSTREAM_OBJS) \
+	    src/engine/vgmstream_api.o -lm
+	./tests/f23_vgmstream_vfs $(STREAMS)
+
+# ─── test de VgmstreamEngine ────────────────────────────────────────────
+# Contrato de IAudioEngine: bloque de 735 frames, remuestreo a 44100,
+# subsongs, EOT y CERO asignaciones en render() (se cuentan de verdad,
+# reemplazando operator new).
+test-f24: tests/f24_vgmstream_engine.cpp $(VGMSTREAM_OBJS) src/engine/vgmstream_api.o
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -I$(VGMSTREAM_DIR) -I$(VGMSTREAM_DIR)/util \
+	    -o tests/f24_vgmstream_engine \
+	    tests/f24_vgmstream_engine.cpp $(VGMSTREAM_OBJS) \
+	    src/engine/vgmstream_api.o -lm
+	./tests/f24_vgmstream_engine $(STREAMS)
+
+# ─── test del enrutado por extensión ────────────────────────────────────
+# No necesita contenido: comprueba que la lista única no colisiona con
+# otros motores y que el .info dice lo mismo que el código.
+test-f25: tests/f25_vgmstream_dispatch.cpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -DAOLIB_WITH_VGMSTREAM=1 \
+	    -o tests/f25_vgmstream_dispatch tests/f25_vgmstream_dispatch.cpp
+	./tests/f25_vgmstream_dispatch aolib_libretro.info
+
+# ─── prueba de extremo a extremo con un .zip real ───────────────────────
+# Carga el archivo por el mismo camino que el core (minizip sobre el VFS)
+# y reporta memoria retenida y tiempos. Se le pasa el .zip por ZIP=.
+test-z03: tests/z03_zip_end_to_end.cpp $(VGMSTREAM_OBJS) src/engine/vgmstream_api.o \
+          $(ZLIB_SOURCES:.c=.o) $(MINIZIP_SOURCES:.c=.o)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -I$(VGMSTREAM_DIR) -I$(VGMSTREAM_DIR)/util \
+	    -o tests/z03_zip_end_to_end \
+	    tests/z03_zip_end_to_end.cpp $(VGMSTREAM_OBJS) src/engine/vgmstream_api.o \
+	    $(ZLIB_SOURCES:.c=.o) $(MINIZIP_SOURCES:.c=.o) -lm
+	./tests/z03_zip_end_to_end $(ZIP)
+
+# test-all encadena `clean` entre objetivos a propósito: f21 y f22 no
+# comparten flags de compilación y reutilizar .o entre ellos da fallos
+# silenciosos.
+test-all:
+	$(MAKE) clean
+	$(MAKE) test-f21 MODULES="$(MODULES)"
+	$(MAKE) clean
+	$(MAKE) test-f22 USE_VGMSTREAM=1 STREAMS="$(STREAMS)"
+	$(MAKE) clean
+	$(MAKE) test-f23 USE_VGMSTREAM=1 STREAMS="$(STREAMS)"
+	$(MAKE) clean
+	$(MAKE) test-f24 USE_VGMSTREAM=1 STREAMS="$(STREAMS)"
+	$(MAKE) clean
+	$(MAKE) test-f25 USE_VGMSTREAM=1
+	$(MAKE) clean
+	$(MAKE) test-f26 USE_VGMSTREAM=1 STREAMS="$(STREAMS)"
+
+.PHONY: all clean dist dist-windows dist-all test-f21 test-f22 test-f23 test-f24 test-f25 test-f26 test-z03 test-all
 
 # ─── one-off diagnostic probes (NOT part of the permanent suite) ────
 # These need real, non-distributable content in /tmp and are run by hand.
+
+# ─── test de disposición de canales ─────────────────────────────────────
+# Un stream de 1 canal debe llegar al core como estéreo entrelazado
+# COMPLETO. libvgmstream sólo sabe bajar de canales, así que fill()
+# escribía medio buffer y el core leía muestras mono como pares L/R.
+# Detecta la regresión midiendo cuántos int16 se escriben de verdad.
+test-f26: tests/f26_channel_layout.cpp $(VGMSTREAM_OBJS) src/engine/vgmstream_api.o
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -I$(VGMSTREAM_DIR) -I$(VGMSTREAM_DIR)/util \
+	    -o tests/f26_channel_layout \
+	    tests/f26_channel_layout.cpp $(VGMSTREAM_OBJS) \
+	    src/engine/vgmstream_api.o -lm
+	./tests/f26_channel_layout $(STREAMS)
