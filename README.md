@@ -20,7 +20,7 @@ Handles albums up to 1.7 GB effortlessly — lazy-loads ZIPs (first 64KB per tra
 | aosdk   | `.psf` `.minipsf` `.psf2` `.minipsf2` `.ssf` `.minissf` |
 | vgmstream | `.xa` `.str` `.pxa` `.xai` `.vag` `.psh` `.npsf` `.adx` `.dsp` `.brstm` `.genh` |
 
-The breakdown of which chip or format covers which system or arcade board is in
+**The breakdown of which chip or format covers which system or arcade board is in**
 [SUPPORTED_SYSTEMS.md](SUPPORTED_SYSTEMS.md).
 
 ![AOLIB deck screenshot](aolibdeck.png) ![AOLIB deck screenshot](aolibdeck1.png)
