@@ -607,7 +607,20 @@ all: $(TARGET)
 $(TARGET): $(OBJS)
 	$(CXX) $(SANFLAGS) -shared -o $@ $^ $(LDFLAGS)
 
+# -MMD -MP: per-object header dependency tracking. Without it, editing a
+# .hpp doesn't trigger recompilation and the link reuses stale objects.
+#
+# Los .d hay que INCLUIRLOS, si no se generan y no los lee nadie: eso es
+# justo lo que pasaba, y un cambio en src/*.hpp -- que es donde vive casi
+%.o: %.cpp
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
 
+%.o: %.c
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
+
+# Include dependency files AFTER pattern rules so make knows the rules
+# when trying to regenerate missing .d files (clean CI checkout)
+-include $(OBJS:.o=.d)
 
 # ═══════════════════════ 'make dist' ═══════════════════════════════
 #
