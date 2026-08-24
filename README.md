@@ -14,19 +14,24 @@ need for `.m3u` files.
 |---------|---------|
 | libgme  | `.spc` `.nsf` `.nsfe` `.gbs` `.hes` `.kss` `.sap` `.ay` `.gym` |
 | libvgm  | `.vgm` `.vgz` (30+ chips, including many arcade ones) |
+| libxmp-lite | `.mod` `.s3m` `.xm` `.it` (tracker modules) |
 | aosdk   | `.psf` `.minipsf` `.psf2` `.minipsf2` `.ssf` `.minissf` |
+| vgmstream | `.xa` `.str` `.pxa` `.xai` `.vag` `.psh` `.npsf` `.adx` `.dsp` `.brstm` `.genh` |
 
-It also accepts `.zip` and `.7z`: the core enumerates the archive's
-contents itself, sorts the tracks naturally (`9 Theme` before `10 Theme`),
-and plays them as an album. Shared library files (`.psflib`, `.psf2lib`,
-`.ssflib`) are resolved across entries in the same archive, but don't show
-up as tracks. `.7z` support covers Store, LZMA, and LZMA2; encrypted
-archives are not supported.
-
-The breakdown of which chip covers which system or arcade board is in
+The breakdown of which chip or format covers which system or arcade board is in
 [SUPPORTED_SYSTEMS.md](SUPPORTED_SYSTEMS.md).
 
 ![AOLIB deck screenshot](aolibdeck.png) ![AOLIB deck screenshot](aolibdeck1.png)
+
+## Albums in `.zip` and `.7z`
+
+The core opens the archive itself: it enumerates the entries, sorts them in natural order (9 Theme before 10 Theme), and plays them as an album. Shared library files (.psflib, .psf2lib, .ssflib) are resolved across entries in the same archive, but never show up as tracks. .7z support covers Store, LZMA and LZMA2; encrypted archives are not supported.
+
+Two things worth knowing about how playback behaves:
+
+Track changes don't interrupt the audio. For .zip albums the next entry is decompressed ahead of time, a slice per frame, while the current track plays. By the time the track ends, the next one is already in memory.
+Track durations fill in as you listen. They're probed in the background instead of up front, so loading an album is immediate no matter how large it is. Until a track has been probed its length shows as --:--.
+.7z behaves differently on purpose: it extracts the whole album while loading, rather than lazily like .zip. 7-Zip compresses in solid blocks.
 
 ## Controls
 
@@ -104,8 +109,8 @@ what's actually heard, not what the engine produced.
 
 ```
 ===================================================================================================
-                                     AOLIB – core architecture                                     
-                     retro_run() per frame: input ──> state ──> audio ──> video                    
+                                    AOLIB - core architecture
+                     retro_run() per frame: input ──> state ──> audio ──> video
 ===================================================================================================
 
                                      ┌────────────────────────┐
@@ -129,8 +134,8 @@ what's actually heard, not what the engine produced.
 │ ┌─ PER-CONTENT STATE / I/O ──────────────────────────────────────────────────────────────────┐ │
 │ │                                                                                            │ │
 │ │  ┌─ CoreContext (rebuilt) ──────┐     ┌────────────────────┐     ┌──────────────────────┐  │ │
-│ │  │ CoreOptions                  │     │     IVFSBridge     │     │  apply_ui_input()    │  │ │
-│ │  │ (zip_entries · frames)       │     │ (LibretroVFS) I/O  │     │  pad/keyboard->deck  │  │ │
+│ │  │ CoreOptions · archive_is_7z  │     │     IVFSBridge     │     │  apply_ui_input()    │  │ │
+│ │  │ zip_entries · prefetch · job │     │ (LibretroVFS) I/O  │     │  pad/keyboard->deck  │  │ │
 │ │  │        │                     │     └─────────┬──────────┘     └──────────┬───────────┘  │ │
 │ │  │        ▼                     │               │                           │              │ │
 │ │  │ unique_ptr<IAudioEngine>     │               ▼                           ▼              │ │
@@ -140,15 +145,30 @@ what's actually heard, not what the engine produced.
 │ │                                       └─────────┬──────────┘     └──────────────────────┘  │ │
 │ └─────────────────────────────────────────────────┼──────────────────────────────────────────┘ │
 │                                                   │ construct_engine_for()                     │
+│                                                   │ (vgmstream tried LAST: it claims generic   │
+│                                                   │ extensions like .str that other engines    │
+│                                                   │ should get first -- order is enforced by   │
+│                                                   │ checkup.sh                                 │
 │                                                   ▼                                            │
 │ ┌─ AUDIO ENGINES (IAudioEngine) ─────────────────────────────────────────────────────────────┐ │
 │ │                                                                                            │ │
-│ │  ┌────────────────┐  ┌────────────────┐  ┌─ aosdk (process-wide guard) ──────────────────┐ │ │
+│ │  ┌────────────────┐  ┌────────────────┐  ┌─── aosdk (process-wide guard) ────────────────┐ │ │
 │ │  │   GmeEngine    │  │  LibvgmEngine  │  │ ┌──────────────┐ ┌──────────────┐ ┌─────────┐ │ │ │
 │ │  │ SPC · NSF · GBS│  │ VGM · VGZ      │  │ │  PsfEngine   │ │  SsfEngine   │ │ Core    │ │ │ │
 │ │  │ HES · KSS...   │  │ (30+ chips)    │  │ │ PSF1 / PSF2  │ │ SSF / Saturn │ │ Guard   │ │ │ │
 │ │  └────────────────┘  └────────────────┘  │ └──────────────┘ └──────────────┘ └─────────┘ │ │ │
-│ │                                          └───────────────────────────────────────────────┘ │ │
+│ │  ┌────────────────┐                      │  acquire() -> bool: a busy guard FAILS        │ │ │
+│ │  │  libxmp-lite   │                      │  THE TRACK LOAD, not the process.             │ │ │
+│ │  │ .MOD.S3M.XM.IT │                      └───────────────────────────────────────────────┘ │ │
+│ │  └────────────────┘                                                                        │ │
+│ │                                                                                            │ │
+│ │  ┌──── VgmstreamEngine (ISC, last in the chain) ────────────────────────────────────────┐  │ │
+│ │  │  49 extensions / 45 parsers: XA · VAG/SVAG/VPK/MIB · ADX/AHX · GC-DSP/BRSTM          │  │ │
+│ │  │  AST · NDS STRM · RIFF/GENH · EA SCHl · CAF · FSB · GCub · MSS · ETC.                │  │ │
+│ │  │ ------------------------------------------------------------------------------------ │  │ │
+│ │  │  vgmstream_api (facade) --> vgmstream_vfs_adapter (STREAMFILE<->IVFSBridge)          │  │ │
+│ │  │  resample -> 44100 inside vgmstream; native rate in TrackMetadata                    │  │ │
+│ │  └──────────────────────────────────────────────────────────────────────────────────────┘  │ │
 │ └─────────────────────────────────────────────────┬──────────────────────────────────────────┘ │
 │                                                   │ render()                                   │
 │                                                   ▼                                            │
@@ -161,6 +181,16 @@ what's actually heard, not what the engine produced.
 │ │  └──────────┘      └──────────┘      └───────────┘      └──────────┘                       │ │
 │ │   * Reverb BEFORE gain; Analyzer AFTER (VU shows what is actually heard)                   │ │
 │ │                                                                                            │ │
+│ │  [ BACKGROUND WORK -- after the audio is handed over, on purpose ]                         │ │
+│ │  ┌──────────────────────────┐   ┌──────────────────────────┐                               │ │
+│ │  │ advance_zip_prefetch()   │   │ advance_duration_probe() │                               │ │
+│ │  │ inflates the NEXT entry, │   │ fills the track lengths  │                               │ │
+│ │  │ ~4 ms/frame budget       │   │ the list shows, 2 ms/fr. │                               │ │
+│ │  └──────────────────────────┘   └──────────────────────────┘                               │ │
+│ │   The frontend paces the core by blocking inside audio_batch_cb(), so                      │ │
+│ │   work placed after it uses slack that would otherwise go to vsync.                        │ │
+│ │   Prefetch has priority: only ONE extra entry is ever in flight.                           │ │
+│ │                                                                                            │ │
 │ │  [ VIDEO PIPELINE ]                                                                        │ │
 │ │  ┌──────────────┐      ┌──────────────┐      ┌──────────────┐                              │ │
 │ │  │  pad input   │ ───> │   UiModel    │ ───> │ ui::render() │ ───> video_refresh_cb        │ │
@@ -172,7 +202,7 @@ what's actually heard, not what the engine produced.
  Module legend:
  [Process state]       : Persists across games (UiModel, AudioAnalyzer, dsp::Reverb)
  [Per-content state]   : Destroyed and rebuilt per ROM (CoreContext, IVFSBridge, Zip, Render)
- [Audio engines]       : Implement IAudioEngine (GME, LibVGM, AOSDK)
+ [Audio engines]       : Implement IAudioEngine (GME, LibVGM, libxmp, AOSDK, vgmstream)
  [I/O & bridges]       : Integration with the Libretro API
  [Archive readers]     : enumerate_zip() (minizip 1.3.1, Store/Deflate, Zip64) and
                          enumerate_7z() (7-Zip SDK, Store/LZMA/LZMA2) both fill the
@@ -210,6 +240,20 @@ Gardner (OKIM6295 and the shared ADPCM decoder), Mitsutaka Okazaki
 R. Belmont, superctr, and Valley Bell (C219/C352), Olivier Galibert and
 Aaron Giles (RF5C68), and Stéphane Dallongeville, Stéphane Akhoun, and
 David Korth (PWM and RF5C164, from the Gens project lineage).
+
+**[libxmp-lite](https://github.com/libxmp/libxmp)** (MOD, S3M, XM, IT) —
+Claudio Matsuoka and Hipolito Carraro Jr, with Alice Rowan and Ozkan
+Sezer maintaining it today.
+
+**[vgmstream](https://github.com/vgmstream/vgmstream)** (all the streamed
+formats in the table above: CD-XA, Sony VAG, CRI ADX/AHX, Nintendo
+GC/Wii DSP and BRSTM, FMOD FSB, EA SCHl, Ubisoft Jade, and the rest) —
+bnnm, kode54, Fastelbja, Ricardo Bravo and contributors, under an
+ISC-style license. Only the parsers this core can actually reach are
+vendored, computed automatically by `patches/vgmstream_closure.py`; the
+exact upstream commit and every local patch are documented in
+[Aolib/patches/VENDOR.md](deps/vgmstream/VENDOR.md) and
+[Aolib/patches/README.md](deps/patches/README.md).)
 
 **[aosdk](https://github.com/nmlgc/aosdk)** (PSF1, PSF2, SSF/Saturn) —
 R. Belmont and Richard Bannister created the SDK; nmlgc maintains it
