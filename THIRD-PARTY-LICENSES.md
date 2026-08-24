@@ -27,6 +27,15 @@ it enables are a mix, inherited mostly from the MAME project:
 - **No license header in the vendored file**: YM2612 (Gens core, same
   author/project as PWM above), QSound (superctr), WonderSwan audio.
 
+## libxmp-lite — `deps/libxmp-lite`
+
+MIT. Copyright (C) 1996-2026 Claudio Matsuoka and Hipolito Carraro Jr.
+Covers MOD, S3M, XM, and IT playback. Vendored from the official
+`libxmp-lite-4.7.1.tar.gz` release with no local patches — see
+[deps/libxmp-lite/VENDOR.md](deps/libxmp-lite/VENDOR.md). The full
+license text ships in `deps/libxmp-lite/README`. MIT imposes no usage
+restriction beyond preserving the copyright notice.
+
 ## aosdk — `deps/aosdk`
 
 Powers PSF1, PSF2, and SSF/Saturn playback. Three different licenses
@@ -66,9 +75,28 @@ encoder side and the stdio-based `7zFile.c` are not vendored. See
 [deps/sevenzip/VENDOR.md](deps/sevenzip/VENDOR.md). Reading `.7z`
 playlists depends on this even without PSF/SSF support enabled.
 
+## vgmstream — `deps/vgmstream`
+
+ISC-style permissive licence. Copyright (c) 2008-2025 Adam Gashlin,
+Fastelbja, Ronny Elfert, bnnm, Christopher Snowhill, NicknineTheEagle,
+bxaimc, Thealexbarney, CyberBotX, EdnessP et al, with portions by Marko
+Kreen, jagarl / Kazunori Ueno, Nullsoft, Paul Hsieh, Entis-soft and Sun
+Microsystems. Full text in `deps/vgmstream/COPYING`.
+
+Covers streamed audio: CD-XA, Sony VAG and its PS2 derivatives, CRI ADX
+and AHX, Sega Dreamcast/Naomi streams, Nintendo GC/Wii DSP and NDS STRM,
+and the generic RIFF/GENH containers — see
+[deps/vgmstream/VENDOR.md](deps/vgmstream/VENDOR.md) for the exact list
+and for why `meta/` is pruned.
+
+No optional codec backend is enabled, so nothing under `ext_libs/`
+(FFmpeg, libvorbis, libmpg123, libatrac9, libcelt, libspeex) is vendored
+or linked, and none of their licences apply here. The permissive terms
+impose no usage restriction beyond preserving the copyright notice.
+
 ## What this means in practice
 
-Everything above is either permissive (BSD, MIT, zlib) or standard
+Everything above is either permissive (BSD, MIT, zlib, ISC) or standard
 copyleft (LGPL, GPL) — except two files: `psx.c` and Musashi. Both carry
 a **non-commercial** restriction that GPL can't override, and both are
 required for PSF1/PSF2/SSF playback (`USE_PSF_ENGINE=1`).
