@@ -34,6 +34,11 @@ struct CoreOptions {
     // ('aolib_reverb_amount') solo fija el NIVEL, nunca el encendido.
     int    host_reverb_amount  = 0;
 
+    // Panorama por defecto de los módulos tracker (XMP_PLAYER_DEFPAN,
+    // 0..100). Solo lo lee XmpEngine, y solo al abrir: libxmp aplica el
+    // panorama al construir los canales durante la carga del módulo.
+    int    xmp_stereo_separation = 50;
+
     // Cantidad a la que vuelve el botón REB al reencender, para no tener
     // que pasar por el menú cada vez. Se actualiza sola con cada cantidad
     // > 0. Mismo patrón que 'repeat_when_not_all' en UiModel.
@@ -54,7 +59,11 @@ public:
         scratch_output_.resize(kFramesPerRun * 2);
     }
 
-    ~CoreContext() = default; // RAII: engine_ y buffers se liberan solos.
+    // El trabajo de prefetch tiene un unzFile abierto, y eso NO es RAII:
+    // hay que cerrarlo a mano o se filtra el handle del VFS del frontend
+    // en cada retro_unload_game(). zip_inflate_abort() es segura sobre un
+    // trabajo inactivo, así que no hace falta comprobar nada aquí.
+    ~CoreContext() { zip_inflate_abort(prefetch); zip_inflate_abort(probe_job); }
 
     CoreContext(const CoreContext&) = delete;
     CoreContext& operator=(const CoreContext&) = delete;
@@ -81,6 +90,51 @@ public:
     // tiene, directamente), se avanza aquí antes que en current_track_index.
     std::vector<ZipEntry> zip_entries;
     std::size_t zip_entry_index = 0;
+
+    // Ruta del archivo del que salieron 'zip_entries'. Hace falta para
+    // reabrirlo y materializar las entradas perezosas: los formatos de
+    // streaming se enumeran leyendo solo su cabecera y el resto se infla
+    // al seleccionar la pista (ver zip_playlist.hpp).
+    std::string archive_path;
+
+    // true = 'archive_path' es un .7z. Las entradas perezosas de los dos
+    // contenedores son indistinguibles aguas abajo, pero materializarlas NO:
+    // una va por minizip y la otra por el SDK de 7-Zip. Antes esto no hacía
+    // falta porque el camino de .7z no tenía entradas perezosas.
+    bool archive_is_7z = false;
+
+    // Inflado por adelantado de la entrada SIGUIENTE, repartido entre
+    // frames (ver libretro.cpp::advance_zip_prefetch()).
+    //
+    // Inflar una entrada cuesta lo que cuesta -- ~168 MB/s medidos, y
+    // deflate obliga a empezar por el principio -- así que la única forma
+    // de que un cambio de pista no se coma el frame es tener la entrada ya
+    // inflada ANTES de necesitarla. Con pistas de minutos y entradas de
+    // decenas de MB sobra tiempo de sobra para hacerlo a trocitos.
+    //
+    // 'prefetch_index' es la entrada que se está inflando; kNoPrefetch
+    // cuando no hay ninguna. Si el usuario salta a otra pista, el trabajo
+    // se descarta: es trabajo especulativo y perderlo solo cuesta lo ya
+    // gastado, nunca corrección.
+    static constexpr std::size_t kNoPrefetch = static_cast<std::size_t>(-1);
+    ZipInflateJob prefetch;
+    std::size_t   prefetch_index = kNoPrefetch;
+
+    // Cursor del sondeo INCREMENTAL de duraciones (ver
+    // libretro.cpp::advance_duration_probe()). Empieza en 0 y avanza un
+    // poco por frame hasta agotar la lista; mientras tanto la UI dibuja
+    // "--:--" en lo que aún no se ha sondeado, que es lo que ya hacía para
+    // las entradas ilegibles.
+    std::size_t duration_probe_index = 0;
+
+    // Los formatos que no dan duración con el prefijo de 64 KiB (XA, EA
+    // SCHl) hay que inflarlos enteros SOLO para sondearlos. Eso son ~97 ms
+    // por entrada, así que necesita su propio trabajo reanudable: hacerlo
+    // de una tacada metía 26 frames por encima del presupuesto en los
+    // primeros segundos de reproducción -- medido, y peor que el problema
+    // original porque cae con el audio ya sonando.
+    ZipInflateJob probe_job;
+    std::size_t   probe_job_index = kNoPrefetch;
 
     // Se pone a true la única vez que se decide "no queda nada más que
     // reproducir" (última pista, última entrada del zip y sin

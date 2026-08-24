@@ -20,6 +20,12 @@
 #pragma once
 
 #include <algorithm>
+
+#ifdef AOLIB_WITH_VGMSTREAM
+#include "vgmstream_extensions.hpp"
+#endif
+
+#include <algorithm>
 #include <cctype>
 #include <cstddef>
 #include <functional>
@@ -61,14 +67,65 @@ inline bool zip_compression_method_supported(uint16_t method) {
 
 struct ZipEntry {
     std::string name;           // nombre del fichero dentro del .zip (con extensión)
-    std::vector<uint8_t> data;  // contenido ya descomprimido, completo
+
+    // Contenido descomprimido. Para la mayoría de formatos está COMPLETO.
+    // Para los de streaming (ver 'lazy') contiene solo los primeros
+    // kZipHeaderPrefix bytes hasta que alguien pida materializarla.
+    std::vector<uint8_t> data;
+
+    // Tamaño real de la entrada descomprimida, lo tenga 'data' entero o no.
+    // Es lo que hay que reportar como get_size(): un formato que deduce la
+    // duración del tamaño del fichero daría una duración corta y falsa si
+    // viera solo el prefijo.
+    uint64_t full_size = 0;
+
+    // true = 'data' solo tiene el prefijo. Los formatos de streaming pesan
+    // entre 2 y 26 MB por pista y un álbum entero no cabe en RAM: Super
+    // Mario Galaxy 2 son 784 MB descomprimidos. La cabecera, en cambio,
+    // está al principio y con 32 KB basta para saber formato y duración de
+    // todo salvo XA (medido en tests/z01_access_pattern.cpp).
+    bool lazy = false;
 
     // Metadata calculada una sola vez por .zip cargado (ver
     // libretro.cpp::precompute_zip_track_durations()). 0/vacío = todavía no
     // calculado, que para la UI es lo mismo que desconocido ("--:--").
     uint64_t cached_length_frames = 0;
     std::string cached_title;
+
+    // Posición de la entrada en el directorio central, guardada durante la
+    // enumeración, para saltar a ella con unzGoToFilePos64() en vez de
+    // buscarla por nombre.
+    //
+    // ESTO ES CORRECCIÓN, NO RENDIMIENTO. unzLocateFile() rechaza con
+    // UNZ_PARAMERROR cualquier nombre de >= UNZ_MAXFILENAMEINZIP (256,
+    // deps/minizip/unzip.c) mientras que enumerate_zip() acepta hasta 511:
+    // una entrada con ruta larga se listaba y NUNCA podía materializarse.
+    // Reproducido con un .zip de 6 carpetas anidadas (273 caracteres):
+    // sin esto, "ya no está en el .zip" y retro_load_game falla; con esto,
+    // carga y suena.
+    //
+    // unzLocateFile es además un escaneo lineal, así que se esperaba una
+    // ganancia de tiempo. MEDIDO: no la hay. Álbum de 424 entradas 4,67 ->
+    // 4,70 s, y 18 frames por encima del presupuesto antes y después. El
+    // directorio central de 424 entradas son ~42 KB y cabe entero en la
+    // caché de bloques de zip_vfs_adapter, así que el escaneo es memoria y
+    // no E/S, y el inflate de la entrada lo enmascara por completo.
+    //
+    // 'dir_pos_valid' es false para las entradas de .7z, que no pasan por
+    // minizip; ese camino sigue usando el nombre.
+    unz64_file_pos dir_pos{};
+    bool dir_pos_valid = false;
+
+    bool complete() const { return !lazy || data.size() == full_size; }
 };
+
+// Cuánto se infla por adelantado de una entrada perezosa. 32.836 bytes es
+// lo máximo que necesitó ningún formato medido para abrir y dar duración
+// (SMG2_galaxy01_multi.ast); 64 KiB deja margen sin coste apreciable.
+// Excepción conocida: XA lee el fichero entero, porque xa.c recorre todos
+// los sectores para enumerar los canales file+channel. Eso no se
+// preadivina: se detecta al leer más allá del prefijo y se materializa.
+constexpr std::size_t kZipHeaderPrefix = 64 * 1024;
 
 // Cotas de memoria OBLIGATORIAS: un .zip puede declarar en su directorio
 // central un 'uncompressed_size' arbitrario, sin relación con los bytes
@@ -78,11 +135,18 @@ struct ZipEntry {
 // std::bad_alloc que cruza la frontera extern "C" de retro_load_game() y
 // llama a terminate() -- muere RetroArch entero, no solo el core.
 //
-// 64 MiB por entrada es generoso para cualquier pista real, incluidas las
-// de PSF2 con samples grandes; 512 MiB de presupuesto total dan margen para
-// álbumes de cientos de pistas sin comprometer un proceso de 32 bits en
-// Windows.
-constexpr std::size_t kMaxZipEntryBytes = 64ull * 1024 * 1024;
+// 256 MiB por entrada. Era 64 MiB cuando el .zip se materializaba ENTERO
+// al cargar y el tope por entrada acotaba, de hecho, el álbum. Con
+// materialización perezosa lo que se retiene es UNA entrada, así que el
+// tope acota una pista: emisoras de radio de GTA Vice City de ~140 MB
+// (medido: 146.800.896 bytes) quedaban listadas pero no sonaban, porque
+// materialize_zip_entry() las rechazaba en el cambio de pista.
+//
+// 512 MiB de presupuesto total dan margen para álbumes de cientos de
+// pistas sin comprometer un proceso de 32 bits en Windows; para las
+// entradas perezosas ese presupuesto cuenta el prefijo de 64 KiB, no los
+// megabytes del fichero.
+constexpr std::size_t kMaxZipEntryBytes = 256ull * 1024 * 1024;
 constexpr std::size_t kMaxZipTotalBytes = 512ull * 1024 * 1024;
 
 // Extensiones reconocidas dentro de un .zip. Incluye las reproducibles y
@@ -100,9 +164,18 @@ constexpr std::size_t kMaxZipTotalBytes = 512ull * 1024 * 1024;
 // álbum carga vacío, sin ningún error que apunte a la causa. Cualquier
 // formato nuevo pasa por aquí también.
 inline bool zip_entry_extension_supported(const std::string& name) {
+#ifdef AOLIB_WITH_VGMSTREAM
+    // Los formatos de streaming tienen su lista en vgmstream_extensions.hpp
+    // y se consulta desde aquí en vez de duplicarla: son 32 formatos y
+    // mantener dos copias a mano es exactamente el fallo que este comentario
+    // lleva advirtiendo desde PSF2.
+    if (vgmstream_ext::matches(name)) return true;
+#endif
     static const char* const kExts[] = {
         ".spc", ".nsf", ".nsfe", ".vgm", ".vgz", ".gbs", ".hes",
-        ".kss", ".sap", ".ay", ".gym", ".psf", ".minipsf",
+        ".kss", ".sap", ".ay", ".gym",
+        ".mod", ".s3m", ".xm", ".it",
+        ".psf", ".minipsf",
         ".psf2", ".minipsf2",
         ".ssf", ".minissf",
         ".psflib", ".lib", ".psf2lib", ".ssflib"
@@ -127,7 +200,13 @@ inline bool zip_entry_extension_supported(const std::string& name) {
 // pistas que ve el usuario contaría dependencias.
 inline bool zip_entry_is_dependency_only(const std::string& name) {
     static const char* const kDepExts[] = {
-        ".psflib", ".lib", ".psf2lib", ".ssflib"
+        ".psflib", ".lib", ".psf2lib", ".ssflib",
+        // .mih es la cabecera de un MIB+MIH: lleva rate, canales e
+        // interleave, y sin ella el .mib no se puede describir. Está en la
+        // lista de extensiones soportadas para que enumerate_zip la guarde
+        // en memoria y el motor la encuentre como hermana, pero no es una
+        // pista: sola no suena.
+        ".mih"
     };
     const auto dot = name.find_last_of('.');
     if (dot == std::string::npos) return false;
@@ -137,6 +216,21 @@ inline bool zip_entry_is_dependency_only(const std::string& name) {
         if (ext == candidate) return true;
     }
     return false;
+}
+
+// Qué entradas se inflan solo hasta la cabecera. Los formatos de
+// streaming, y nada más: son los únicos que pesan megabytes por pista.
+// Los .mih quedan fuera aunque sean de streaming -- son cabeceras
+// completas de pocos bytes y el motor las busca como hermanas, así que
+// tienen que estar enteras en memoria.
+inline bool zip_entry_is_lazy(const std::string& name) {
+#ifdef AOLIB_WITH_VGMSTREAM
+    if (zip_entry_is_dependency_only(name)) return false;
+    return vgmstream_ext::matches(name);
+#else
+    (void)name;
+    return false;
+#endif
 }
 
 // True si la entrada es una pista seleccionable: soportada y no una
@@ -194,6 +288,187 @@ inline bool natural_less(const std::string& a, const std::string& b) {
 // (lo que usan los arneses de test).
 using ZipWarnLogger = std::function<void(const std::string&)>;
 
+// Inflado REANUDABLE de una entrada perezosa.
+//
+// Deflate no permite acceso aleatorio, así que inflar una entrada siempre
+// cuesta lo mismo y siempre empieza por el principio: medido, 16,3 MB en
+// 97 ms y 5,2 MB en 32 ms, o sea ~168 MB/s sin coste fijo apreciable. Ese
+// tiempo no se puede reducir; solo se puede REPARTIR. Lo que no se puede
+// es gastarlo entero dentro de un retro_run(), que es lo que hacía la
+// versión de una sola tacada: 97 ms contra 16,7 de presupuesto y 64 ms de
+// búfer de audio, o sea un corte audible en cada cambio de pista.
+//
+// El trabajo se parte en un ZipInflateJob que sobrevive entre frames: el
+// unzFile se queda abierto y unzReadCurrentFile() continúa donde lo dejó.
+// El llamante decide cuánto avanza en cada vuelta.
+struct ZipInflateJob {
+    unzFile              zf    = nullptr;   // nullptr = no hay trabajo vivo
+    std::vector<uint8_t> buf;
+    uint64_t             done  = 0;
+    uint64_t             total = 0;
+    std::string          name;              // para los avisos, y para verificar
+                                            // que el trabajo sigue siendo el
+                                            // que el llamante cree
+    bool                 failed = false;
+
+    bool active()   const { return zf != nullptr; }
+    bool complete() const { return zf != nullptr && !failed && done >= total; }
+};
+
+// Cierra el trabajo y suelta el buffer a medias. Segura de llamar sobre un
+// trabajo inactivo, que es lo que la hace usable desde un destructor.
+inline void zip_inflate_abort(ZipInflateJob& job) {
+    if (job.zf) {
+        unzCloseCurrentFile(job.zf);
+        unzClose(job.zf);
+        job.zf = nullptr;
+    }
+    job.buf.clear();
+    job.buf.shrink_to_fit();
+    job.done = job.total = 0;
+    job.failed = false;
+    job.name.clear();
+}
+
+// Abre el .zip, se coloca en la entrada y reserva el buffer destino. No
+// infla nada todavía. Devuelve false si la entrada es inservible.
+inline bool zip_inflate_begin(const std::string& zip_path, IVFSBridge& vfs,
+                              const ZipEntry& entry, ZipInflateJob& job,
+                              const ZipWarnLogger& warn = nullptr) {
+    zip_inflate_abort(job);
+
+    if (entry.full_size > static_cast<uint64_t>(kMaxZipEntryBytes)) {
+        if (warn) {
+            warn("[aolib] " + entry.name + ": la entrada mide " +
+                 std::to_string(entry.full_size) +
+                 " bytes y supera el límite por entrada (" +
+                 std::to_string(kMaxZipEntryBytes) + " bytes).");
+        }
+        return false;
+    }
+
+    zlib_filefunc64_def io = zip_vfs_adapter::make(vfs);
+    job.zf = unzOpen2_64(zip_path.c_str(), &io);
+    if (!job.zf) return false;
+
+    // Salto directo con la posición guardada al enumerar. El respaldo por
+    // nombre (búsqueda exacta, case-sensitive: así fue como se enumeró, y un
+    // .zip puede legítimamente traer dos entradas que solo difieran en
+    // mayúsculas) queda para las entradas que no la tengan.
+    const bool located = entry.dir_pos_valid
+                             ? (unzGoToFilePos64(job.zf, &entry.dir_pos) == UNZ_OK)
+                             : (unzLocateFile(job.zf, entry.name.c_str(), 1) == UNZ_OK);
+    if (!located) {
+        unzClose(job.zf);
+        job.zf = nullptr;
+        if (warn) warn("[aolib] " + entry.name + ": ya no está en el .zip.");
+        return false;
+    }
+    if (unzOpenCurrentFile(job.zf) != UNZ_OK) {
+        unzClose(job.zf);
+        job.zf = nullptr;
+        return false;
+    }
+
+    try {
+        job.buf.resize(static_cast<std::size_t>(entry.full_size));
+    } catch (const std::bad_alloc&) {
+        unzCloseCurrentFile(job.zf);
+        unzClose(job.zf);
+        job.zf = nullptr;
+        if (warn) {
+            warn("[aolib] " + entry.name + ": std::bad_alloc reservando " +
+                 std::to_string(entry.full_size) + " bytes.");
+        }
+        return false;
+    }
+
+    job.done   = 0;
+    job.total  = entry.full_size;
+    job.name   = entry.name;
+    job.failed = false;
+    return true;
+}
+
+// Infla como mucho 'max_bytes' de salida. Devuelve false si el trabajo ha
+// fallado; el llamante distingue "sigue" de "terminado" con complete().
+inline bool zip_inflate_step(ZipInflateJob& job, uint64_t max_bytes,
+                             const ZipWarnLogger& warn = nullptr) {
+    if (!job.zf || job.failed) return false;
+
+    const uint64_t target = (max_bytes >= job.total - job.done)
+                                ? job.total
+                                : job.done + max_bytes;
+    // EOF antes de 'total' es entrada truncada, no fin de trabajo: se
+    // detecta con el propio retorno de unzReadCurrentFile y no con
+    // unzeof(), para no depender de más API vendorizada de la necesaria.
+    bool hit_eof = false;
+    while (job.done < target) {
+        const uint64_t remaining = target - job.done;
+        const unsigned int chunk = (remaining > 0xFFFFFFFFull)
+                                       ? 0xFFFFFFFFu
+                                       : static_cast<unsigned int>(remaining);
+        const int got = unzReadCurrentFile(job.zf, job.buf.data() + job.done, chunk);
+        if (got < 0)  { job.failed = true; break; }
+        if (got == 0) { hit_eof = true;    break; }
+        job.done += static_cast<uint64_t>(got);
+    }
+
+    if (job.done >= job.total) return true;   // completo, sin error
+
+    if (job.failed || hit_eof) {
+        job.failed = true;
+        if (warn) {
+            warn("[aolib] " + job.name + ": la descompresión falló tras " +
+                 std::to_string(static_cast<unsigned long long>(job.done)) +
+                 " de " + std::to_string(static_cast<unsigned long long>(job.total)) +
+                 " bytes.");
+        }
+        return false;
+    }
+    return true;   // sigue vivo, queda trabajo
+}
+
+// Entrega el resultado a la entrada y cierra el trabajo.
+inline bool zip_inflate_commit(ZipEntry& entry, ZipInflateJob& job) {
+    if (!job.complete()) { zip_inflate_abort(job); return false; }
+    entry.data = std::move(job.buf);
+    job.buf.clear();
+    zip_inflate_abort(job);
+    return true;
+}
+
+// Infla una entrada perezosa entera, de una tacada. Idempotente: si ya
+// está completa no hace nada. Es el camino síncrono de siempre, ahora
+// escrito sobre el trabajo reanudable, y sigue siendo el respaldo cuando
+// el prefetch no ha llegado a tiempo.
+//
+// Devuelve false si la entrada ya no está en el archivo o la
+// descompresión falla; el llamante debe tratarlo como pista ilegible y
+// seguir adelante, no como error fatal.
+inline bool materialize_zip_entry(const std::string& zip_path, IVFSBridge& vfs,
+                                  ZipEntry& entry,
+                                  const ZipWarnLogger& warn = nullptr) {
+    if (entry.complete()) return true;
+
+    ZipInflateJob job;
+    if (!zip_inflate_begin(zip_path, vfs, entry, job, warn)) return false;
+    if (!zip_inflate_step(job, job.total, warn)) { zip_inflate_abort(job); return false; }
+    return zip_inflate_commit(entry, job);
+}
+
+// Devuelve una entrada perezosa a su prefijo. Se llama al cambiar de
+// pista: sin esto la materialización sería acumulativa y el álbum acabaría
+// igual de cargado que antes, solo que más tarde.
+inline void release_zip_entry(ZipEntry& entry) {
+    if (!entry.lazy || entry.data.size() <= kZipHeaderPrefix) return;
+    std::vector<uint8_t> prefix(entry.data.begin(),
+                                entry.data.begin() +
+                                    static_cast<std::ptrdiff_t>(kZipHeaderPrefix));
+    entry.data.swap(prefix);   // swap y no assign: libera de verdad la
+                               // capacidad grande en vez de conservarla
+}
+
 // Enumera 'zip_path' (vía 'vfs', sin fopen real) y devuelve en
 // 'out_entries' cada fichero soportado, en el ORDEN en que aparece en el
 // directorio central del .zip -- normalmente el orden de inserción del
@@ -237,7 +512,11 @@ inline bool enumerate_zip(const std::string& zip_path, IVFSBridge& vfs,
         if (!is_dir && zip_entry_extension_supported(entry_name)) {
             // Límite POR ENTRADA: rechaza solo esta entrada, no aborta el
             // resto del .zip.
-            if (info.uncompressed_size > static_cast<ZPOS64_T>(kMaxZipEntryBytes)) {
+            // El límite por entrada acota lo que se RETIENE. Una entrada
+            // perezosa retiene el prefijo, así que se mide contra el
+            // tamaño que se materializaría al reproducirla.
+            if (!zip_entry_is_lazy(entry_name) &&
+                info.uncompressed_size > static_cast<ZPOS64_T>(kMaxZipEntryBytes)) {
                 if (warn) {
                     warn("[aolib] " + entry_name + ": entrada de " +
                          std::to_string(info.uncompressed_size) +
@@ -284,14 +563,32 @@ inline bool enumerate_zip(const std::string& zip_path, IVFSBridge& vfs,
                 continue;
             }
 
+            // Las entradas de streaming se inflan solo hasta la cabecera.
+            // El resto (PSF y sus _lib, GME, XMP) se materializa entero
+            // como siempre: son ficheros de cientos de KB, no dan problema
+            // de memoria, y su resolución de dependencias asume tenerlo
+            // todo en RAM. Acotar el cambio a los formatos que realmente
+            // pesan deja intacto lo que ya funcionaba.
+            const bool lazy_entry = zip_entry_is_lazy(entry_name);
+            const ZPOS64_T want_bytes =
+                lazy_entry ? std::min<ZPOS64_T>(info.uncompressed_size, kZipHeaderPrefix)
+                           : info.uncompressed_size;
+
             if (unzOpenCurrentFile(zf) == UNZ_OK) {
                 ZipEntry entry;
-                entry.name = entry_name;
+                entry.name      = entry_name;
+                entry.full_size = info.uncompressed_size;
+                entry.lazy      = lazy_entry;
+                // Se pide ANTES de leer nada: unzGetFilePos64 describe la
+                // entrada en la que está posicionado el cursor del
+                // directorio, y materialize_zip_entry() vuelve aquí de un
+                // salto en vez de recorrer el directorio comparando nombres.
+                entry.dir_pos_valid = (unzGetFilePos64(zf, &entry.dir_pos) == UNZ_OK);
                 // Defensa en profundidad: el límite por entrada debería
                 // hacer esto inalcanzable. Si captura, la entrada se trata
                 // como fallida.
                 try {
-                    entry.data.resize(info.uncompressed_size);
+                    entry.data.resize(want_bytes);
                 } catch (const std::bad_alloc&) {
                     unzCloseCurrentFile(zf);
                     if (warn) {
@@ -308,8 +605,8 @@ inline bool enumerate_zip(const std::string& zip_path, IVFSBridge& vfs,
 
                 ZPOS64_T total_read = 0;
                 bool read_ok = true;
-                while (total_read < info.uncompressed_size) {
-                    const ZPOS64_T remaining = info.uncompressed_size - total_read;
+                while (total_read < want_bytes) {
+                    const ZPOS64_T remaining = want_bytes - total_read;
                     // unzReadCurrentFile toma un unsigned de 32 bits: el
                     // resto se pide a trozos. Inalcanzable con
                     // kMaxZipEntryBytes actual, pero el recorte tiene que
@@ -325,8 +622,14 @@ inline bool enumerate_zip(const std::string& zip_path, IVFSBridge& vfs,
                 }
                 unzCloseCurrentFile(zf);
 
-                if (read_ok && total_read == info.uncompressed_size) {
-                    total_reserved += static_cast<std::size_t>(info.uncompressed_size); // solo lo realmente aceptado
+                if (read_ok && total_read == want_bytes) {
+                    if (!entry.lazy) entry.full_size = total_read;
+                    // Solo cuenta contra el presupuesto lo que se RETIENE.
+                    // Una entrada perezosa ocupa 64 KiB, no sus 26 MB, y
+                    // por eso un álbum que antes no cabía ahora entra
+                    // entero. Lo que se materialice después vive y muere
+                    // con la pista en curso, fuera de esta cuenta.
+                    total_reserved += static_cast<std::size_t>(want_bytes);
                     out_entries.push_back(std::move(entry));
                 } else if (warn) {
                     warn("[aolib] " + entry_name +

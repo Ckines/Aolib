@@ -68,7 +68,12 @@ inline bool enumerate_7z(const std::string& archive_path, IVFSBridge& vfs,
     // sin consumir el flujo; ver el propio uso de esta bandera en 7zMain.c
     // del SDK.
     LookToRead2_CreateVTable(&look_stream, /*lookahead=*/1);
-    Byte look_buf[1 << 14];
+    // 64 KiB y no los 16 KiB del ejemplo del SDK: el camino de .zip ya
+    // aprendió que en Windows manda el COSTE POR LLAMADA al VFS, no los
+    // bytes (ver zip_vfs_adapter.hpp), y aquí cada lectura cruza además dos
+    // veces la frontera por cada seek, porque retro_vfs_seek() no devuelve
+    // la posición y hay que preguntarla con stream_tell().
+    Byte look_buf[1 << 16];
     look_stream.bufSize = sizeof(look_buf);
     look_stream.buf = look_buf;
 
@@ -98,7 +103,7 @@ inline bool enumerate_7z(const std::string& archive_path, IVFSBridge& vfs,
     size_t out_buffer_size = 0;
 
     std::size_t total_reserved = 0;
-    bool budget_warned = false;
+    std::size_t skipped_over_budget = 0;
 
     for (UInt32 i = 0; i < db.NumFiles; ++i) {
         if (SzArEx_IsDir(&db, i)) continue;
@@ -145,15 +150,33 @@ inline bool enumerate_7z(const std::string& archive_path, IVFSBridge& vfs,
             continue;
         }
         if (total_reserved + static_cast<std::size_t>(declared_size) > kMaxZipTotalBytes) {
-            if (!budget_warned && warn) {
-                warn("[aolib] " + archive_path + ": presupuesto total del .7z (" +
-                     std::to_string(kMaxZipTotalBytes) +
-                     " bytes) agotado, entradas restantes omitidas.");
-                budget_warned = true;
-            }
+            // Se CUENTAN las descartadas. El aviso de antes salía una sola
+            // vez y no decía cuántas pistas faltaban, así que un álbum
+            // truncado se veía en pantalla como un álbum corto, sin ninguna
+            // pista de que faltara nada.
+            ++skipped_over_budget;
             continue;
         }
 
+        // EAGER A PROPÓSITO, y ahora medido en vez de razonado.
+        //
+        // Se probó la materialización perezosa que usa .zip. Sobre el mismo
+        // álbum de 60 pistas (250 MB), en .7z:
+        //     carga            10,94 s -> 2,49 s
+        //     peor cambio de pista  ~0 -> 2.524 ms
+        // Cambiar 11 segundos UNA vez por 2,5 segundos EN CADA salto de
+        // pista es estrictamente peor: el usuario espera durante la carga,
+        // no en mitad del disco.
+        //
+        // La causa es del formato, no del código: 7-Zip comprime en bloques
+        // sólidos (el archivo de prueba trae 61 entradas en 5 bloques), así
+        // que sacar UNA entrada obliga a descomprimir su bloque entero, y
+        // LZMA descomprime a ~23 MB/s. Ni siquiera con bloques pequeños
+        // saldría por debajo de los 16,7 ms de un frame, y SzArEx_Extract()
+        // no ofrece una decodificación reanudable que se pueda repartir.
+        //
+        // Por eso .7z extrae aquí y .zip no: no es una asimetría pendiente
+        // de arreglar, es la respuesta correcta para cada contenedor.
         size_t offset = 0;
         size_t out_size_processed = 0;
         const SRes extract_res = SzArEx_Extract(
@@ -181,8 +204,17 @@ inline bool enumerate_7z(const std::string& archive_path, IVFSBridge& vfs,
             }
             continue;
         }
+        entry.full_size = entry.data.size();
+        entry.lazy = false;
         total_reserved += entry.data.size();
         out_entries.push_back(std::move(entry));
+    }
+
+    if (skipped_over_budget > 0 && warn) {
+        warn("[aolib] " + archive_path + ": " + std::to_string(skipped_over_budget) +
+             " entradas omitidas por el presupuesto total del .7z (" +
+             std::to_string(kMaxZipTotalBytes) + " bytes, " +
+             std::to_string(total_reserved) + " usados). El álbum está INCOMPLETO.");
     }
 
     if (out_buffer) {
@@ -202,3 +234,4 @@ inline bool enumerate_7z(const std::string& archive_path, IVFSBridge& vfs,
 
     return true;
 }
+

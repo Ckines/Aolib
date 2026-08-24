@@ -22,6 +22,11 @@
 #include "sevenzip_playlist.hpp"
 #include "engine/gme_engine.hpp"
 #include "engine/libvgm_engine.hpp"
+#include "engine/xmp_engine.hpp"
+#ifdef AOLIB_WITH_VGMSTREAM
+#include "engine/vgmstream_engine.hpp"
+#include "vgmstream_extensions.hpp"
+#endif
 #include "ui/audio_analyzer.hpp"
 #include "ui/transport.hpp"
 #include "ui/ui_model.hpp"
@@ -86,6 +91,19 @@ constexpr int kFfExtraBlocks = 7;
 // coste por retro_run() frente al presupuesto, para cruzarlo con la
 // estadística 'close_to_underrun' que ya calcula RetroArch. Cuesta dos
 // lecturas de reloj por frame (~80 ns sobre 300-2000 us).
+//
+// DESGLOSE POR TRAMOS: 'total_us' incluye audio_batch_cb() y video_cb(),
+// que son callbacks DEL FRONTEND y no coste del core. Con el sync de audio
+// activo, audio_batch_cb() bloquea hasta que el driver drena su buffer, y
+// como este core entrega exactamente 735 frames (1/60 s) por llamada, ese
+// bloqueo es el regulador de velocidad del frontend. Medirlo dentro de
+// 'total_us' hace que un core ocioso parezca consumir el presupuesto
+// entero. Los acumuladores de abajo separan trabajo real de espera; la
+// suma de los siete tramos es 'total_us' salvo el redondeo.
+//
+// Coste: doce lecturas de reloj por frame en vez de dos. Medido a 37 ns
+// por lectura (steady_clock, x86-64), son 0,45 us sobre un frame de
+// milisegundos.
 struct AudioDiag {
     unsigned long frames_run       = 0;
     unsigned long underrun_events  = 0;   // retro_run() que entregaron relleno
@@ -94,6 +112,19 @@ struct AudioDiag {
     double        total_us         = 0.0;
     double        worst_us         = 0.0;
     int           warns_emitted    = 0;   // limitado, para no inundar el log
+
+    // Tramos, en orden de ejecución dentro de retro_run().
+    double us_input   = 0.0;  // opciones + apply_ui_input()
+    double us_engine  = 0.0;  // render() del motor + on_video_frame() + avance rápido
+    double us_dsp     = 0.0;  // reverb + ganancia + analizador (FFT)
+    double us_audiocb = 0.0;  // audio_batch_cb()  -- FRONTEND
+    double us_advance = 0.0;  // fin de pista: select_track / load_zip_entry_from
+    double us_ui      = 0.0;  // refresh_ui_dynamic_state() + ui::render()
+    double us_videocb = 0.0;  // video_cb()        -- FRONTEND
+    // Peor caso de los dos tramos que dependen del contenido, para
+    // distinguir "caro siempre" de "caro solo al cambiar de pista".
+    double worst_engine_us = 0.0;
+    double worst_ui_us     = 0.0;
 };
 AudioDiag g_diag;
 
@@ -140,7 +171,7 @@ void log_audio_diag_summary(const char* motivo) {
     log_message(algo ? RETRO_LOG_WARN : RETRO_LOG_INFO,
         "[aolib] audio (%s): %lu frames | underruns: %lu (%lu frames de relleno, %.1f ms) | "
         "coste por frame: media %.0f us, peor %.0f us, presupuesto %.0f us | "
-        "por encima del presupuesto: %lu (%.3f %%)",
+        "trabajo del core por encima del presupuesto: %lu (%.3f %%)",
         motivo, g_diag.frames_run, g_diag.underrun_events, g_diag.underrun_frames,
         g_diag.underrun_frames / 44.1, mean_us, g_diag.worst_us, kFrameBudgetUs,
         g_diag.over_budget,
@@ -151,6 +182,32 @@ void log_audio_diag_summary(const char* motivo) {
             "audio a tiempo); 'underruns == 0' con cortes audibles apunta a la cadena "
             "frontend->driver (buffer de audio, resampler o Dynamic Rate Control).");
     }
+
+    const double n = static_cast<double>(g_diag.frames_run);
+    const double core_us = (g_diag.us_input + g_diag.us_engine + g_diag.us_dsp +
+                            g_diag.us_advance + g_diag.us_ui) / n;
+    const double wait_us = (g_diag.us_audiocb + g_diag.us_videocb) / n;
+
+    log_message(RETRO_LOG_INFO,
+        "[aolib] desglose por frame (us): entrada %.1f | motor %.1f | dsp+fft %.1f | "
+        "audio_batch_cb %.1f | avance %.1f | ui %.1f | video_cb %.1f",
+        g_diag.us_input / n, g_diag.us_engine / n, g_diag.us_dsp / n,
+        g_diag.us_audiocb / n, g_diag.us_advance / n, g_diag.us_ui / n,
+        g_diag.us_videocb / n);
+
+    log_message(RETRO_LOG_INFO,
+        "[aolib] trabajo del core %.1f us (%.1f %% del presupuesto) | espera en callbacks "
+        "del frontend %.1f us | peor motor %.0f us, peor ui %.0f us",
+        core_us, 100.0 * core_us / kFrameBudgetUs, wait_us,
+        g_diag.worst_engine_us, g_diag.worst_ui_us);
+
+    // Lectura del desglose: si 'espera en callbacks' se lleva casi todo, el
+    // core no va justo -- lo que hay es el frontend regulando la velocidad,
+    // y 'por encima del presupuesto' está midiendo el vsync, no el core.
+    log_message(RETRO_LOG_INFO,
+        "[aolib] los dos callbacks son del frontend: con sync de audio o vsync activos "
+        "bloquean a propósito. Sólo 'trabajo del core' compite de verdad con los %.0f us.",
+        kFrameBudgetUs);
 }
 
 IVFSBridge& active_vfs() {
@@ -230,8 +287,21 @@ std::unique_ptr<IAudioEngine> construct_psf_variant(
 std::unique_ptr<IAudioEngine> construct_engine_for(
     const char* uri, const std::string& display_name,
     const uint8_t* data, std::size_t size, double default_fade_seconds,
-    bool loop_infinite, const std::vector<ZipEntry>* siblings = nullptr) {
-    (void)siblings; // solo se usa dentro de #ifdef AOLIB_WITH_PSF más abajo
+    bool loop_infinite, int xmp_stereo_separation,
+    const std::vector<ZipEntry>* siblings = nullptr,
+    // Tamaño real del fichero cuando 'data' es solo un prefijo de una
+    // entrada de .zip todavía sin materializar. 0 o <= size = completo.
+    // Solo la rama de vgmstream lo usa: los demás motores nunca reciben
+    // entradas parciales, porque zip_entry_is_lazy() las excluye.
+    std::size_t full_size = 0,
+    // Se pone a true si open() falló habiendo leído más allá del prefijo.
+    // Sin esto la bandera se perdía con el motor al devolver nullptr, y el
+    // barrido no reintentaba: los formatos que necesitan el fichero ENTERO
+    // sólo para abrir (caf.c lo necesita, medido con prefijos de 64 KiB a
+    // 2 MiB) se quedaban sin duración y soltaban un ERROR por pista.
+    bool* out_needs_full = nullptr) {
+    if (out_needs_full) *out_needs_full = false;
+    (void)siblings; // se usa dentro de #ifdef AOLIB_WITH_PSF y de la rama vgmstream
 
     const bool looks_psf = has_suffix(display_name, ".psf") || has_suffix(display_name, ".minipsf");
     const bool looks_psf2 = has_suffix(display_name, ".psf2") || has_suffix(display_name, ".minipsf2");
@@ -243,6 +313,20 @@ std::unique_ptr<IAudioEngine> construct_engine_for(
     // extensiones (libgme define gme_vgz_type) y no hay forma de
     // des-registrarlas sin parchear el código vendorizado.
     const bool looks_vgm = has_suffix(display_name, ".vgm") || has_suffix(display_name, ".vgz");
+    // Módulos tracker (libxmp-lite). Los cuatro formatos que compila la
+    // variante "lite"; añadir otro (STM, MTM, MED...) exige el libxmp
+    // completo, no basta con listar la extensión aquí.
+#ifdef AOLIB_WITH_VGMSTREAM
+    // No decide nada por sí sola: la rama que la consulta va la última,
+    // después de que PSF/VGM/XMP/GME hayan tenido su turno.
+    const bool looks_streamed = vgmstream_ext::matches(display_name);
+#endif
+    const XmpEngine::Format xmp_format =
+        has_suffix(display_name, ".mod") ? XmpEngine::Format::Mod :
+        has_suffix(display_name, ".s3m") ? XmpEngine::Format::S3m :
+        has_suffix(display_name, ".xm")  ? XmpEngine::Format::Xm  :
+        has_suffix(display_name, ".it")  ? XmpEngine::Format::It  :
+                                            XmpEngine::Format::Auto;
 
 #ifdef AOLIB_TEST_HOOKS
     // Extensión reconocida SOLO en builds de test; nunca compite con una
@@ -315,6 +399,30 @@ std::unique_ptr<IAudioEngine> construct_engine_for(
         return vgm;
     }
 
+    // Módulos tracker. Va ANTES de libgme por coherencia con la rama VGM,
+    // aunque hoy libgme no reclama ninguna de estas cuatro extensiones:
+    // dejar que decida gme_identify_extension() haría depender el reparto
+    // de qué formatos registre una versión futura de libgme.
+    if (xmp_format != XmpEngine::Format::Auto) {
+        if (!data || size == 0) {
+            log_message(RETRO_LOG_ERROR, "[aolib] %s: sin contenido en memoria.",
+                        display_name.c_str());
+            return nullptr;
+        }
+        const int fade_msecs = static_cast<int>(default_fade_seconds * 1000.0);
+        auto xmp = std::make_unique<XmpEngine>(fade_msecs, loop_infinite, xmp_format,
+                                                xmp_stereo_separation);
+        if (!xmp->open(uri, data, size, active_vfs())) {
+            log_message(RETRO_LOG_ERROR,
+                "[aolib] %s: xmp_load_module_from_memory() falló (módulo corrupto o "
+                "formato fuera de MOD/S3M/XM/IT).", display_name.c_str());
+            return nullptr;
+        }
+        log_message(RETRO_LOG_INFO, "[aolib] %s: cargado vía %s.",
+                    display_name.c_str(), xmp->engine_name());
+        return xmp;
+    }
+
     // libgme: identificación por extensión o por magic bytes. Aquí ya no
     // pueden llegar .vgm/.vgz, capturadas más arriba.
     gme_type_t type = gme_identify_extension(display_name.c_str());
@@ -323,6 +431,87 @@ std::unique_ptr<IAudioEngine> construct_engine_for(
         if (suffix && suffix[0] != '\0') type = gme_identify_extension(suffix);
     }
     if (!type) {
+        // Último recurso: identificación POR CONTENIDO con libxmp. Cubre la
+        // convención Amiga "mod.nombre", donde el formato va de prefijo y
+        // no de extensión, y los rips renombrados. Va aquí, al final, y no
+        // antes: el comprobador de MOD acepta ficheros sin cabecera mágica
+        // a base de heurística, así que solo debe opinar cuando ningún otro
+        // motor ha reclamado el fichero.
+        struct xmp_test_info ti;
+        std::memset(&ti, 0, sizeof(ti));
+        if (data && size > 0 && size <= static_cast<std::size_t>(0x7FFFFFFF) &&
+            xmp_test_module_from_memory(data, static_cast<long>(size), &ti) == 0) {
+            const int fade_msecs = static_cast<int>(default_fade_seconds * 1000.0);
+            auto xmp = std::make_unique<XmpEngine>(fade_msecs, loop_infinite,
+                                                    XmpEngine::Format::Auto,
+                                                    xmp_stereo_separation);
+            if (xmp->open(uri, data, size, active_vfs())) {
+                log_message(RETRO_LOG_INFO,
+                    "[aolib] %s: identificado por contenido como \"%s\", cargado vía %s.",
+                    display_name.c_str(), ti.type, xmp->engine_name());
+                return xmp;
+            }
+        }
+#ifdef AOLIB_WITH_VGMSTREAM
+        // vgmstream va EL ÚLTIMO, a propósito. Reconoce cientos de
+        // formatos y varios reclaman extensiones genéricas (.str, .snd,
+        // .wav, .dat) que también usan formatos de los motores de arriba.
+        // Poniéndolo aquí, sólo ve lo que nadie más ha querido, y el
+        // reparto no depende de qué registre una versión futura suya.
+        if (looks_streamed) {
+            // Búsqueda de hermanos contra las entradas ya descomprimidas
+            // del archivo: MIB+MIH y compañía no tienen rutas que abrir
+            // cuando el contenido vive dentro de un .zip.
+            vgmstream_vfs_adapter::SiblingLookup lookup;
+            if (siblings) {
+                const std::vector<ZipEntry>* entries = siblings;
+                lookup = [entries](const std::string& want)
+                        -> vgmstream_vfs_adapter::MemoryView {
+                    for (const ZipEntry& e : *entries) {
+                        if (vgmstream_ext::same_name(e.name, want) && !e.data.empty())
+                            return { e.data.data(), e.data.size() };
+                    }
+                    return {};
+                };
+            }
+
+            // display_name, no uri: las entradas de .zip llegan con uri
+            // nulo y vgmstream necesita la extensión para elegir parser.
+            auto vgms = std::make_unique<VgmstreamEngine>(loop_infinite ? -1.0 : 2.0,
+                                                           static_cast<int>(default_fade_seconds),
+                                                           display_name, std::move(lookup));
+            if (full_size > size) vgms->set_partial(full_size);
+            if (vgms->open(uri, data, size, active_vfs())) {
+                log_message(RETRO_LOG_INFO,
+                    "[aolib] %s: cargado vía %s (%s, %u subsong%s).",
+                    display_name.c_str(), vgms->engine_name(),
+                    vgms->metadata().chip.c_str(), vgms->track_count(),
+                    vgms->track_count() == 1 ? "" : "s");
+                return vgms;
+            }
+            // Mensaje accionable: el genérico manda a mirar el fichero,
+            // que casi siempre está bien. La causa real suele ser un
+            // hermano que falta, y eso hay que decirlo.
+            if (out_needs_full && vgms->needs_full_data()) {
+                // Lectura truncada: no es un fichero malo, es que hace falta
+                // entero. El llamante lo materializa y reintenta, sin log.
+                *out_needs_full = true;
+                return nullptr;
+            }
+            if (has_suffix(display_name, ".mib")) {
+                log_message(RETRO_LOG_ERROR,
+                    "[aolib] %s: ni el .mih hermano ni la heurística de "
+                    "PS-ADPCM sin cabecera pudieron describir este fichero.",
+                    display_name.c_str());
+            } else {
+                log_message(RETRO_LOG_ERROR,
+                    "[aolib] %s: extensión de streaming reconocida pero ningún "
+                    "parser de vgmstream aceptó el contenido.", display_name.c_str());
+            }
+            return nullptr;
+        }
+#endif
+
         log_message(RETRO_LOG_WARN, "[aolib] %s: formato no reconocido, omitido.",
                     display_name.c_str());
         return nullptr;
@@ -370,35 +559,334 @@ std::unique_ptr<IAudioEngine> construct_engine_for(
 // Coste: una apertura por entrada (decodificación de cabecera y resolución
 // de "_lib", sin ejecutar una sola instrucción de CPU emulada), una vez y
 // de forma síncrona dentro de retro_load_game().
+// Aviso de archivo compartido entre la enumeración y la materialización
+// bajo demanda: las dos hablan de la misma entrada y deben sonar igual en
+// el log.
+void archive_warn_log(const std::string& msg) {
+    log_message(RETRO_LOG_WARN, "%s", msg.c_str());
+}
+
+// True si el motor abrió pero necesitó leer más allá del prefijo. Solo
+// VgmstreamEngine puede darlo: es el único que recibe entradas parciales.
+// Un dynamic_cast aquí es barato -- ocurre una vez por entrada al cargar
+// el álbum, no por frame -- y evita ensuciar IAudioEngine con un método
+// que ningún otro motor puede responder.
+bool engine_needs_full_data(const IAudioEngine* engine) {
+#ifdef AOLIB_WITH_VGMSTREAM
+    if (!engine) return true;   // no abrió: puede que le faltara cabecera
+    if (const auto* v = dynamic_cast<const VgmstreamEngine*>(engine))
+        return v->needs_full_data();
+    return false;
+#else
+    (void)engine;
+    return false;
+#endif
+}
+
+// Materializa una entrada perezosa.
+//
+// Solo el camino de .zip produce entradas perezosas: en .7z se extrae todo al
+// enumerar, y por qué está medido en sevenzip_playlist.hpp. Aquí se
+// comprueba de todos modos, porque antes esto era correcto POR CASUALIDAD --
+// una entrada de .7z marcada perezosa habría acabado en minizip intentando
+// leer un .7z, y habría fallado de forma incomprensible en vez de decirlo.
+bool materialize_entry(ZipEntry& entry) {
+    if (entry.complete()) return true;
+    if (g_ctx->archive_is_7z) {
+        log_message(RETRO_LOG_ERROR,
+            "[aolib] %s: entrada de .7z marcada como perezosa; el .7z se extrae "
+            "entero al enumerar y no hay camino de materialización.",
+            entry.name.c_str());
+        return false;
+    }
+    return materialize_zip_entry(g_ctx->archive_path, *g_vfs, entry, archive_warn_log);
+}
+
+// ¿Esta entrada la abriría un motor de aosdk? Son los únicos que NO se
+// pueden sondear mientras suena otra cosa: corlett_decode() escribe
+// total_samples/decaybegin/decayend, estáticas de proceso de corlett.c que
+// corlett_sample_fade() consulta por muestra, así que asomarse a una entrada
+// PSF mientras suena otra corrompe el contador de fade a media reproducción.
+//
+// Las extensiones son las mismas que mira construct_engine_for(); se repiten
+// aquí a propósito y no se factorizan con aquéllas porque allí el reparto
+// decide QUÉ motor construir y aquí decide CUÁNDO se puede sondear: son dos
+// preguntas distintas que hoy dan la misma respuesta.
+bool entry_routes_to_aosdk(const std::string& name) {
+    return has_suffix(name, ".psf")   || has_suffix(name, ".minipsf")  ||
+           has_suffix(name, ".psf2")  || has_suffix(name, ".minipsf2") ||
+           has_suffix(name, ".ssf")   || has_suffix(name, ".minissf");
+}
+
+enum class ProbeResult { Done, Failed, NeedsFull };
+
+// Guarda la duración y el título de un motor recién abierto en su entrada.
+void cache_metadata_into(ZipEntry& entry, const IAudioEngine& engine) {
+    const auto& m = engine.metadata();
+    // Duración REAL: incluye el fade y, en VGM, los bucles que se van a
+    // reproducir (ver TrackMetadata::playback_frames()).
+    entry.cached_length_frames = m.playback_frames();
+    if (!m.title.empty()) entry.cached_title = m.title;
+}
+
+// Sondea UNA entrada con lo que ya tiene en RAM. Para todos los formatos
+// medidos salvo XA y EA SCHl, el prefijo de 64 KiB basta para dar formato y
+// duración. Si el parser pide más allá del prefijo devuelve NeedsFull y NO
+// materializa: inflar 16 MB de una tacada aquí metía el parón dentro del
+// audio, que es peor que el problema que se venía a arreglar.
+//
+// El motor temporal muere al salir, liberando el guard de aosdk ANTES de que
+// la siguiente llamada construya el suyo: la misma secuencia
+// destruir-antes-de-construir que exige load_zip_entry_from().
+ProbeResult probe_zip_entry_from_prefix(ZipEntry& entry) {
+    bool open_wants_full = false;
+    auto tmp = construct_engine_for(
+        nullptr, entry.name, entry.data.data(), entry.data.size(),
+        g_ctx->options.default_fade_seconds, g_ctx->options.loop_infinite,
+        g_ctx->options.xmp_stereo_separation, &g_ctx->zip_entries,
+        static_cast<std::size_t>(entry.full_size), &open_wants_full);
+
+    if (entry.lazy && !entry.complete() &&
+        (open_wants_full || engine_needs_full_data(tmp.get()))) {
+        tmp.reset();
+        return ProbeResult::NeedsFull;
+    }
+    // El release NO puede saltarse en el camino de fallo, o la entrada se
+    // quedaría inflada para el resto de la sesión y el sondeo acumularía el
+    // álbum -- justo lo que la materialización perezosa evita.
+    if (!tmp) { release_zip_entry(entry); return ProbeResult::Failed; }
+
+    cache_metadata_into(entry, *tmp);
+    tmp.reset();
+    release_zip_entry(entry);
+    return ProbeResult::Done;
+}
+
+// Segunda fase: la entrada ya está inflada entera. Se abre, se cachea y se
+// suelta inmediatamente.
+bool probe_zip_entry_with_full_data(ZipEntry& entry) {
+    auto tmp = construct_engine_for(
+        nullptr, entry.name, entry.data.data(), entry.data.size(),
+        g_ctx->options.default_fade_seconds, g_ctx->options.loop_infinite,
+        g_ctx->options.xmp_stereo_separation, &g_ctx->zip_entries);
+    const bool ok = static_cast<bool>(tmp);
+    if (ok) cache_metadata_into(entry, *tmp);
+    tmp.reset();
+    release_zip_entry(entry);
+    return ok;
+}
+
+// Camino EAGER (solo aosdk): estas entradas nunca son perezosas, así que
+// NeedsFull no puede darse y no hace falta nada reanudable.
+bool probe_zip_entry_duration(ZipEntry& entry) {
+    return probe_zip_entry_from_prefix(entry) == ProbeResult::Done;
+}
+
+// Barrido EAGER, en retro_load_game, y SOLO de las entradas de aosdk.
+//
+// Antes barría el álbum entero, y eso era el 100 % del tiempo de
+// retro_load_game: 4,67 s en un álbum de 424 entradas .asf, del que 363 se
+// abrían DOS veces (el intento con prefijo tenía éxito y luego
+// needs_full_data() obligaba a inflar la entrada entera y reabrir). Todo ese
+// trabajo alimenta dos campos que solo lee rebuild_ui_model() para pintar la
+// columna de duraciones: el audio no depende de ellos, y la UI ya sabe
+// dibujar "--:--" cuando valen 0.
+//
+// Lo que NO se puede diferir es aosdk: su sondeo pisa las estáticas de
+// corlett.c (ver entry_routes_to_aosdk), así que tiene que ocurrir antes de
+// que exista ningún motor. Cuesta ≈0 porque esas entradas no son perezosas,
+// ya están enteras en RAM y no hay inflate que pagar.
 void precompute_zip_track_durations() {
     if (!g_ctx) return;
     for (auto& entry : g_ctx->zip_entries) {
         if (!zip_entry_is_playable(entry.name)) continue;
-
-        auto tmp = construct_engine_for(
-            nullptr, entry.name, entry.data.data(), entry.data.size(),
-            g_ctx->options.default_fade_seconds, g_ctx->options.loop_infinite,
-            &g_ctx->zip_entries);
-        // tmp muere al acabar la iteración, liberando el guard de aosdk
-        // ANTES de que la siguiente construya el suyo: la misma secuencia
-        // destruir-antes-de-construir que exige load_zip_entry_from().
-        if (!tmp) continue; // se registra su propio log de error; esta
-                             // entrada se queda con "--:--" y no bloquea
-                             // el resto del barrido.
-
-        const auto& m = tmp->metadata();
-        // Duración REAL: incluye el fade y, en VGM, los bucles que se van a
-        // reproducir (ver TrackMetadata::playback_frames()).
-        entry.cached_length_frames = m.playback_frames();
-        if (!m.title.empty()) entry.cached_title = m.title;
+        if (!entry_routes_to_aosdk(entry.name)) continue;
+        probe_zip_entry_duration(entry);
     }
 }
 
 
-// hacia adelante si esa entrada concreta falla (fichero corrupto, PSF con
-// _lib no resoluble dentro del zip, etc.) en vez de abortar toda la
-// lista. Devuelve el índice realmente cargado, o -1 si ninguna entrada a
-// partir de 'index' funcionó.
+// Presupuesto de inflado por frame. 4 ms de los 16.667: el trabajo del core
+// medido es ~0,5 ms por frame, así que queda holgura de sobra, y con esto una
+// entrada de 16 MB (97 ms de inflate) está lista en ~24 frames = 0,4 s. Las
+// pistas duran minutos: sobra tiempo.
+constexpr double   kPrefetchBudgetUs   = 4000.0;
+constexpr uint64_t kPrefetchChunkBytes = 256 * 1024;
+
+// Tope de tamaño para el prefetch. Mientras dura, la entrada siguiente y la
+// que suena están en RAM a la vez, así que el pico se dobla. Las entradas de
+// streaming medidas no pasan de 26 MB; por encima de esto se renuncia al
+// prefetch y se paga el parón, que es el comportamiento de siempre.
+constexpr uint64_t kPrefetchMaxEntryBytes = 64ull * 1024 * 1024;
+
+// Presupuesto del sondeo incremental de duraciones. Más apretado que el del
+// prefetch porque esto es puramente cosmético: llenar la columna de
+// duraciones no puede competir con tener lista la pista siguiente.
+constexpr double kDurationProbeBudgetUs = 2000.0;
+
+// Sondea las duraciones que faltan, un poco por frame.
+//
+// Esto era un barrido eager del álbum entero dentro de retro_load_game y era
+// el 100 % de su coste. Aquí no hay prisa: la lista se rellena sola en los
+// primeros segundos de reproducción y el usuario ve "--:--" mientras tanto,
+// exactamente igual que ya veía en una entrada ilegible.
+//
+// NO toca las entradas de aosdk: ésas ya las sondeó precompute_zip_track_
+// durations() antes de que existiera ningún motor, porque sondearlas con algo
+// sonando corrompe las estáticas de corlett.c. Tampoco toca la entrada que
+// suena: su duración ya la puso load_zip_entry_from() por la vía normal.
+// Refleja en la lista visible la duración recién sondeada de la entrada i.
+// Se actualiza la fila EN SITIO en vez de reconstruir el modelo entero, que
+// recorrería las 424 entradas por cada duración que llega.
+void publish_probed_duration(std::size_t i, const ZipEntry& entry) {
+    for (std::size_t v = 0; v < g_ui.playable_to_zip.size(); ++v) {
+        if (g_ui.playable_to_zip[v] != i) continue;
+        if (v < g_ui.tracks.size()) {
+            g_ui.tracks[v].length_frames = entry.cached_length_frames;
+            if (!entry.cached_title.empty()) g_ui.tracks[v].label = entry.cached_title;
+        }
+        return;
+    }
+}
+
+void advance_duration_probe() {
+    if (!g_ctx || g_ctx->zip_entries.empty()) return;
+    // El prefetch manda: tener lista la pista siguiente importa más que
+    // rellenar una columna, y así solo hay UNA entrada extra inflándose a la
+    // vez, que es lo que acota el pico de memoria.
+    if (g_ctx->prefetch.active()) return;
+
+    const double t0 = now_us();
+
+    // Fase 2: hay una entrada inflándose SOLO para sondearla. Se adelanta un
+    // trozo y, al completarse, se abre, se cachea y se suelta.
+    if (g_ctx->probe_job.active()) {
+        const std::size_t i = g_ctx->probe_job_index;
+        ZipEntry& entry = g_ctx->zip_entries[i];
+        while (!g_ctx->probe_job.complete()) {
+            if (!zip_inflate_step(g_ctx->probe_job, kPrefetchChunkBytes)) {
+                zip_inflate_abort(g_ctx->probe_job);
+                g_ctx->probe_job_index = CoreContext::kNoPrefetch;
+                ++g_ctx->duration_probe_index;
+                return;
+            }
+            if (now_us() - t0 >= kDurationProbeBudgetUs) return;   // sigue el frame que viene
+        }
+        // El trabajo ya está inflado, pero abrirlo, cachear y soltarlo NO es
+        // gratis. Apilarlo sobre un presupuesto ya gastado daba un frame de
+        // 22 ms (medido); si no queda margen se hace en el frame siguiente.
+        if (now_us() - t0 >= kDurationProbeBudgetUs) return;
+        zip_inflate_commit(entry, g_ctx->probe_job);
+        g_ctx->probe_job_index = CoreContext::kNoPrefetch;
+        if (probe_zip_entry_with_full_data(entry)) publish_probed_duration(i, entry);
+        ++g_ctx->duration_probe_index;
+        return;
+    }
+
+    if (g_ctx->duration_probe_index >= g_ctx->zip_entries.size()) return;
+
+    // Fase 1: barrer entradas con lo que ya hay en RAM, hasta agotar el
+    // presupuesto o topar con una que pida el fichero entero.
+    while (g_ctx->duration_probe_index < g_ctx->zip_entries.size()) {
+        const std::size_t i = g_ctx->duration_probe_index;
+        ZipEntry& entry = g_ctx->zip_entries[i];
+
+        const bool skip = !zip_entry_is_playable(entry.name) ||
+                          entry_routes_to_aosdk(entry.name) ||
+                          entry.cached_length_frames != 0 ||
+                          i == g_ctx->zip_entry_index;
+        if (skip) { ++g_ctx->duration_probe_index; continue; }
+
+        const ProbeResult r = probe_zip_entry_from_prefix(entry);
+        if (r == ProbeResult::NeedsFull) {
+            // NO se avanza el cursor: la entrada se retoma en fase 2.
+            if (entry.full_size <= kPrefetchMaxEntryBytes &&
+                zip_inflate_begin(g_ctx->archive_path, *g_vfs, entry, g_ctx->probe_job)) {
+                g_ctx->probe_job_index = i;
+            } else {
+                zip_inflate_abort(g_ctx->probe_job);
+                g_ctx->probe_job_index = CoreContext::kNoPrefetch;
+                ++g_ctx->duration_probe_index;   // se queda con "--:--"
+            }
+            return;
+        }
+        if (r == ProbeResult::Done) publish_probed_duration(i, entry);
+        ++g_ctx->duration_probe_index;
+        if (now_us() - t0 >= kDurationProbeBudgetUs) break;
+    }
+}
+
+// Adelanta el inflado de la entrada SIGUIENTE, a trocitos, un poco por frame.
+//
+// Es especulativo y desechable: si el usuario salta a otra pista, el trabajo
+// se tira sin más. Y es OPCIONAL por diseño -- si no llega a tiempo,
+// load_zip_entry_from() encuentra la entrada incompleta y la infla de una
+// tacada igual que antes. Nunca puede ser peor que no tenerlo.
+//
+// No emite avisos: un fallo aquí no es un fallo de reproducción todavía. Si
+// la entrada es ilegible de verdad, lo dirá el camino síncrono cuando toque
+// reproducirla, con su aviso y su "prueba con la siguiente".
+void advance_zip_prefetch() {
+    if (!g_ctx || g_ctx->zip_entries.empty()) return;
+    if (!g_ctx->engine || g_ctx->exhausted)   return;
+    // ZipInflateJob es minizip: no hay equivalente reanudable para .7z,
+    // porque LZMA sólido no se puede reanudar por trozos de salida.
+    if (g_ctx->archive_is_7z) return;
+
+    // La entrada siguiente NO es zip_entry_index + 1: un .zip puede traer
+    // entradas que son dependencias y no pistas (el .psflib de un álbum PSF
+    // es el caso de libro), y load_zip_entry_from() las salta. Prefetchear a
+    // ciegas el índice+1 acertaba en todo el álbum menos justo en el salto
+    // por encima de la dependencia -- medido en R4: 92,80 ms en esa única
+    // transición y 0,00 ms en las 26 restantes. Se usa el mismo predicado
+    // que la enumeración para no volver a desincronizarse.
+    std::size_t next = g_ctx->zip_entry_index + 1;
+    while (next < g_ctx->zip_entries.size() &&
+           !zip_entry_is_playable(g_ctx->zip_entries[next].name)) {
+        ++next;
+    }
+
+    // El trabajo vivo dejó de ser el que toca (el usuario saltó): a la basura.
+    if (g_ctx->prefetch.active() && g_ctx->prefetch_index != next) {
+        zip_inflate_abort(g_ctx->prefetch);
+        g_ctx->prefetch_index = CoreContext::kNoPrefetch;
+    }
+    if (next >= g_ctx->zip_entries.size()) return;
+
+    ZipEntry& entry = g_ctx->zip_entries[next];
+    if (!entry.lazy || entry.complete()) return;
+    if (entry.full_size > kPrefetchMaxEntryBytes) return;
+
+    if (!g_ctx->prefetch.active()) {
+        if (!zip_inflate_begin(g_ctx->archive_path, *g_vfs, entry, g_ctx->prefetch)) {
+            zip_inflate_abort(g_ctx->prefetch);
+            g_ctx->prefetch_index = CoreContext::kNoPrefetch;
+            return;
+        }
+        g_ctx->prefetch_index = next;
+    }
+
+    const double t0 = now_us();
+    while (!g_ctx->prefetch.complete()) {
+        if (!zip_inflate_step(g_ctx->prefetch, kPrefetchChunkBytes)) {
+            zip_inflate_abort(g_ctx->prefetch);
+            g_ctx->prefetch_index = CoreContext::kNoPrefetch;
+            return;
+        }
+        if (now_us() - t0 >= kPrefetchBudgetUs) break;
+    }
+
+    if (g_ctx->prefetch.complete()) {
+        zip_inflate_commit(entry, g_ctx->prefetch);
+        g_ctx->prefetch_index = CoreContext::kNoPrefetch;
+    }
+}
+
+// Carga la entrada 'index' del .zip activo, o la primera posterior que
+// funcione: si esa entrada concreta falla (fichero corrupto, PSF con _lib no
+// resoluble dentro del zip, dependencia que no es pista) se sigue hacia
+// adelante en vez de abortar la lista entera. Devuelve el índice realmente
+// cargado, o -1 si ninguna entrada a partir de 'index' funcionó.
 long load_zip_entry_from(std::size_t index) {
     for (std::size_t i = index; i < g_ctx->zip_entries.size(); ++i) {
         // CRÍTICO: destruir el motor actual ANTES de construir el
@@ -409,15 +897,60 @@ long load_zip_entry_from(std::size_t index) {
         // aunque sean de variantes distintas -- dispara ese assert.
         g_ctx->engine.reset();
 
-        const ZipEntry& entry = g_ctx->zip_entries[i];
+        ZipEntry& entry = g_ctx->zip_entries[i];
+
+        // Una entrada perezosa se infla ENTERA para reproducirla: el motor
+        // conserva un puntero al buffer durante toda la pista, así que
+        // tiene que estar completo antes de construirlo. Cuesta unos 43 ms
+        // (medido), dentro del cambio de pista y fuera del bucle de audio.
+        if (entry.lazy && !entry.complete()) {
+            // Si el prefetch iba a medias de ESTA entrada, se termina aquí en
+            // vez de tirarlo y reinflar desde cero: deflate no deja reanudar
+            // desde un punto arbitrario, pero el trabajo ya hecho sigue vivo
+            // dentro del job y solo falta lo que quede. Un prefetch a medias
+            // convierte el parón entero en el trozo que faltaba.
+            bool from_prefetch = false;
+            if (g_ctx->prefetch.active()) {
+                if (g_ctx->prefetch_index == i &&
+                    zip_inflate_step(g_ctx->prefetch, g_ctx->prefetch.total, archive_warn_log)) {
+                    from_prefetch = zip_inflate_commit(entry, g_ctx->prefetch);
+                }
+                if (!from_prefetch) zip_inflate_abort(g_ctx->prefetch);
+                g_ctx->prefetch_index = CoreContext::kNoPrefetch;
+            }
+            if (!from_prefetch && !materialize_entry(entry))
+                continue;   // ilegible: se prueba con la siguiente entrada
+        }
+
         auto engine = construct_engine_for(nullptr, entry.name, entry.data.data(),
                                             entry.data.size(), g_ctx->options.default_fade_seconds,
-                                            g_ctx->options.loop_infinite, &g_ctx->zip_entries);
+                                            g_ctx->options.loop_infinite,
+                                            g_ctx->options.xmp_stereo_separation,
+                                            &g_ctx->zip_entries);
         if (engine) {
+            // Devolver a su prefijo TODAS las demás entradas perezosas:
+            // sin esto la memoria sería acumulativa y el álbum acabaría
+            // igual de cargado que antes, solo que más tarde.
+            for (std::size_t j = 0; j < g_ctx->zip_entries.size(); ++j) {
+                if (j != i) release_zip_entry(g_ctx->zip_entries[j]);
+            }
+
             g_ctx->engine = std::move(engine);
             g_ctx->zip_entry_index = i;
             g_ctx->current_track_index = 0;
             g_ctx->frames_rendered = 0;
+
+            // Cachear aquí la duración y el título de la entrada que se
+            // acaba de abrir. El sondeo incremental NO puede tocar la
+            // entrada que suena -- termina en release_zip_entry(), que le
+            // quitaría al motor vivo el buffer que está leyendo -- así que
+            // sin esto la primera pista se quedaría en "--:--" en cuanto se
+            // saliera de ella. Y es gratis: la metadata ya está construida.
+            {
+                const auto& m0 = g_ctx->engine->metadata();
+                entry.cached_length_frames = m0.playback_frames();
+                if (!m0.title.empty()) entry.cached_title = m0.title;
+            }
             // 'iUseReverb' es estado global del SPU y cada motor nuevo nace
             // con el valor de fábrica: hay que reaplicarlo en CADA
             // construcción, no solo en la primera.
@@ -503,6 +1036,19 @@ void apply_core_options() {
     g_ctx->options.spu_reverb_enabled = get_bool_variable(
         "aolib_spu_reverb_enabled", g_ctx->options.spu_reverb_enabled, "enabled", "habilitado");
 
+    // Se lee aquí, pero solo la consultan los motores que se CONSTRUYEN
+    // después: XMP_PLAYER_DEFPAN hay que fijarlo antes de cargar el módulo
+    // (ver xmp_engine.hpp), así que cambiarlo con una pista sonando no la
+    // afecta -- se nota en la siguiente. Libretro no permite avisar de eso
+    // desde el core; queda documentado en el README.
+    {
+        const double sep = get_double_variable(
+            "aolib_xmp_stereo_separation",
+            static_cast<double>(g_ctx->options.xmp_stereo_separation));
+        g_ctx->options.xmp_stereo_separation =
+            static_cast<int>(sep < 0.0 ? 0.0 : (sep > 100.0 ? 100.0 : sep));
+    }
+
     // El menú NO enciende ni apaga el reverb de la capa host: eso es
     // exclusivo del botón REB del deck (ver DeckButton::Reverb). La API de
     // Libretro va en una sola dirección -- el core LEE con GET_VARIABLE y no
@@ -536,11 +1082,23 @@ void apply_core_options() {
 void log_now_playing() {
     if (!g_ctx || !g_ctx->engine) return;
     const auto& m = g_ctx->engine->metadata();
-    log_message(RETRO_LOG_INFO,
-        "[aolib] Reproduciendo: \"%s\" (%s) — %s — %.1fs%s",
-        m.title.c_str(), m.game.c_str(), m.artist.c_str(),
-        m.length_frames / 44100.0,
-        m.fade_frames > 0 ? " + fade" : "");
+
+    // Los campos vacíos se omiten en vez de imprimirse igual. Los formatos
+    // de streaming no traen tags -- no hay equivalente al bloque Corlett de
+    // PSF ni a los campos de libgme -- y la línea salía como
+    // 'Reproduciendo: "" () —', que parece un fallo y no lo es.
+    std::string line = "[aolib] Reproduciendo: \"" + m.title + "\"";
+    if (!m.game.empty())    line += " (" + m.game + ")";
+    if (!m.artist.empty())  line += " — " + m.artist;
+    if (!m.comment.empty()) line += " [" + m.comment + "]";
+
+    char tail[64];
+    std::snprintf(tail, sizeof(tail), " — %.1fs%s",
+                  m.length_frames / 44100.0,
+                  m.fade_frames > 0 ? " + fade" : "");
+    line += tail;
+
+    log_message(RETRO_LOG_INFO, "%s", line.c_str());
 }
 
 // ═══════════════════════ Puente core -> UI ═══════════════════════
@@ -1037,7 +1595,18 @@ RETRO_API void retro_set_environment(retro_environment_t cb) {
     // .info de dist/: son listas independientes.
     static const retro_system_content_info_override overrides[] = {
         { "spc|nsf|nsfe|vgm|vgz|gbs|hes|kss|sap|ay|gym", false, false },
+        // Módulos tracker: libxmp-lite carga desde memoria
+        // (xmp_load_module_from_memory) y, al ser la variante CORE_PLAYER,
+        // no abre ficheros de instrumento externos. No necesita fullpath.
+        { "mod|s3m|xm|it",                               false, false },
         { "psf|minipsf|psf2|minipsf2|ssf|minissf",       true,  false },
+#ifdef AOLIB_WITH_VGMSTREAM
+        // need_fullpath = false: VgmstreamEngine acepta el buffer directo
+        // (es como llegan las entradas de .zip) y cae al VFS por ruta
+        // cuando no hay contenido en memoria. La cadena se construye desde
+        // vgmstream_extensions.hpp, no se escribe a mano.
+        { vgmstream_ext::pipe_separated().c_str(),        false, false },
+#endif
         { "zip",                                         true,  false },
         { "7z",                                          true,  false },
         { nullptr, false, false }
@@ -1057,6 +1626,12 @@ RETRO_API void retro_set_environment(retro_environment_t cb) {
         // 1=35%, 2=50%, 3=65%.
         { "aolib_reverb_amount",
           "Player Reverb Amount; 1|2|3" },
+        // Panorama por defecto de los módulos (XMP_PLAYER_DEFPAN). 100 es
+        // el panorama Amiga duro que trae libxmp de fábrica: en
+        // auriculares parte la mezcla en dos mitades. 50 es el valor que
+        // recomiendan las notas de libxmp 4.7.1.
+        { "aolib_xmp_stereo_separation",
+          "Module stereo separation (MOD/S3M/XM/IT); 50|0|25|75|100" },
         { nullptr, nullptr }
     };
     cb(RETRO_ENVIRONMENT_SET_VARIABLES, (void*)options);
@@ -1132,8 +1707,18 @@ RETRO_API void retro_get_system_info(struct retro_system_info* info) {
     info->library_name     = "Aolib";
     // Mantener sincronizado con display_version en dist/aolib_libretro.info
     // y dist-windows/aolib_libretro.info.
-    info->library_version  = "1.1.2";
-    info->valid_extensions = "spc|nsf|nsfe|vgm|vgz|gbs|hes|kss|sap|ay|gym|psf|minipsf|psf2|minipsf2|ssf|minissf|zip|7z";
+    info->library_version  = "1.2.0";
+    // Se construye una vez y se conserva: RETRO_API no copia la cadena, y
+    // devolver un temporal dejaría al frontend con un puntero colgante.
+    static const std::string kValidExtensions = [] {
+        std::string base = "spc|nsf|nsfe|vgm|vgz|gbs|hes|kss|sap|ay|gym|mod|s3m|xm|it|"
+                           "psf|minipsf|psf2|minipsf2|ssf|minissf|zip|7z";
+#ifdef AOLIB_WITH_VGMSTREAM
+        base += "|" + vgmstream_ext::pipe_separated();
+#endif
+        return base;
+    }();
+    info->valid_extensions = kValidExtensions.c_str();
     info->need_fullpath    = true;  // valor por defecto conservador; SET_CONTENT_INFO_OVERRIDE lo refina por extensión
     // true: el core abre los .zip/.7z él mismo (minizip vía
     // zip_playlist.hpp, el SDK de 7-Zip vía sevenzip_playlist.hpp), como
@@ -1223,7 +1808,9 @@ static bool retro_load_game_impl(const struct retro_game_info* game) {
         // rechazados. Ambas funciones rellenan el mismo
         // std::vector<ZipEntry>: a partir de aquí el pipeline de carga no
         // distingue de qué contenedor vino cada entrada.
-        auto archive_warn = [](const std::string& msg) { log_message(RETRO_LOG_WARN, "%s", msg.c_str()); };
+        auto archive_warn = [](const std::string& msg) { archive_warn_log(msg); };
+        g_ctx->archive_path = game->path;
+        g_ctx->archive_is_7z = is_7z;
         const bool enumerated = is_7z
             ? enumerate_7z(game->path, *g_vfs, g_ctx->zip_entries, archive_warn)
             : enumerate_zip(game->path, *g_vfs, g_ctx->zip_entries, archive_warn);
@@ -1261,7 +1848,8 @@ static bool retro_load_game_impl(const struct retro_game_info* game) {
     auto engine = construct_engine_for(
         game->path, display_name,
         static_cast<const uint8_t*>(game->data), static_cast<std::size_t>(game->size),
-        g_ctx->options.default_fade_seconds, g_ctx->options.loop_infinite);
+        g_ctx->options.default_fade_seconds, g_ctx->options.loop_infinite,
+        g_ctx->options.xmp_stereo_separation);
 
     if (!engine) {
         g_ctx.reset();
@@ -1331,6 +1919,9 @@ RETRO_API void retro_run(void) {
     if (!g_ctx) return;
 
     const double t_frame_start = now_us();
+    // Acumulado de callbacks ANTES de este frame, para poder restar al
+    // cierre lo que este frame gastó bloqueado en el frontend.
+    const double prev_cb_us = g_diag.us_audiocb + g_diag.us_videocb;
 
     // Releer las variables en cada iteración serían varias llamadas a
     // environ_cb por frame para nada; GET_VARIABLE_UPDATE dice si algo
@@ -1344,6 +1935,9 @@ RETRO_API void retro_run(void) {
     // Entrada del mando ANTES de rendir audio, para que un cambio de pista
     // tenga efecto en el mismo frame en que se pulsa el botón.
     apply_ui_input();
+
+    double t_mark = now_us();
+    g_diag.us_input += t_mark - t_frame_start;
 
     // ═════════════════════ AVANCE RÁPIDO ═════════════════════
     //
@@ -1421,6 +2015,14 @@ RETRO_API void retro_run(void) {
         }
     }
 
+    {
+        const double t = now_us();
+        const double d = t - t_mark;
+        g_diag.us_engine += d;
+        if (d > g_diag.worst_engine_us) g_diag.worst_engine_us = d;
+        t_mark = t;
+    }
+
     // Reverb de la capa host, ANTES de la ganancia: el volumen debe gobernar
     // la mezcla completa (seco + cola). Al revés, subir el volumen dejaría
     // la cola atrás.
@@ -1441,8 +2043,34 @@ RETRO_API void retro_run(void) {
     apply_host_gain(g_ctx->scratch_output_.data(), kFramesPerRun, g_ui.volume);
     g_analyzer.feed(g_ctx->scratch_output_.data(), kFramesPerRun);
 
+    {
+        const double t = now_us();
+        g_diag.us_dsp += t - t_mark;
+        t_mark = t;
+    }
+
+    // audio_batch_cb() se mide APARTE: con el sync de audio del frontend
+    // activo bloquea hasta que el driver drena, y esa espera no es coste
+    // del core (ver AudioDiag).
     if (audio_batch_cb)
         audio_batch_cb(g_ctx->scratch_output_.data(), kFramesPerRun);
+
+    {
+        const double t = now_us();
+        g_diag.us_audiocb += t - t_mark;
+        t_mark = t;
+    }
+
+    // Inflar por adelantado la entrada siguiente, con el audio de este frame
+    // YA entregado. Va aquí y no antes de audio_batch_cb() para no retrasar
+    // la entrega: el frontend marca el ritmo bloqueando en esa llamada, así
+    // que el trabajo puesto después ocupa holgura que si no se iría en el
+    // vsync.
+    advance_zip_prefetch();
+
+    // Y las duraciones que falten, con menos presupuesto: tener lista la
+    // pista siguiente manda sobre rellenar una columna de la lista.
+    advance_duration_probe();
 
     // En pausa el reloj no avanza: frames_rendered es la posición dentro de
     // la pista, y la lee la barra de progreso.
@@ -1557,22 +2185,46 @@ RETRO_API void retro_run(void) {
     // g_can_dupe se sigue consultando en retro_load_game porque su valor
     // sigue siendo información útil sobre
     // el frontend, pero ya no gobierna esta rama.
+    {
+        const double t = now_us();
+        g_diag.us_advance += t - t_mark;
+        t_mark = t;
+    }
+
     if (video_cb && !g_framebuffer.empty()) {
         refresh_ui_dynamic_state();
         ui::render(g_framebuffer.data(), g_ui);
+
+        {
+            const double t = now_us();
+            const double d = t - t_mark;
+            g_diag.us_ui += d;
+            if (d > g_diag.worst_ui_us) g_diag.worst_ui_us = d;
+            t_mark = t;
+        }
+
+        // video_cb() se mide APARTE por el mismo motivo que audio_batch_cb():
+        // con vsync el frontend puede bloquear aquí.
         video_cb(g_framebuffer.data(), kScreenWidth, kScreenHeight,
                  kScreenWidth * sizeof(uint32_t));
+
+        g_diag.us_videocb += now_us() - t_mark;
     }
 
-    // Cierre de la contabilidad del frame. Se mide el retro_run() COMPLETO
-    // -- motor, ganancia, FFT y dibujado de la UI -- porque es el total lo
-    // que compite con el presupuesto de 16,667 ms.
+    // Cierre de la contabilidad del frame. 'total_us' es el retro_run()
+    // completo, callbacks incluidos, porque es lo que se compara con el
+    // reloj de pared. Pero 'over_budget' cuenta SOLO el trabajo del core:
+    // audio_batch_cb() y video_cb() bloquean a propósito con sync o vsync
+    // activos, así que contarlos aquí hacía que un core ocioso reportara
+    // 40% de frames "por encima del presupuesto" -- medido en RetroArch:
+    // video_cb se lleva 16.140 us de los 16.638 de media.
     {
         const double us = now_us() - t_frame_start;
         ++g_diag.frames_run;
         g_diag.total_us += us;
         if (us > g_diag.worst_us) g_diag.worst_us = us;
-        if (us > kFrameBudgetUs) ++g_diag.over_budget;
+        const double core_us = us - (g_diag.us_audiocb + g_diag.us_videocb - prev_cb_us);
+        if (core_us > kFrameBudgetUs) ++g_diag.over_budget;
     }
 }
 
