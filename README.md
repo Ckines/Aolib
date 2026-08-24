@@ -70,30 +70,41 @@ Requires GNU Make and a C++17 compiler. All dependencies are vendored
 under `deps/`; nothing else needs to be installed.
 
 ```sh
-make all USE_PSF_ENGINE=1              # Linux   -> aolib_libretro.so
-make all USE_PSF_ENGINE=1 PLATFORM=windows   # Windows -> aolib_libretro.dll
+make all USE_PSF_ENGINE=1 USE_VGMSTREAM=1              # Linux   -> aolib_libretro.so
+make all USE_PSF_ENGINE=1 USE_VGMSTREAM=1 PLATFORM=windows   # Windows -> aolib_libretro.dll
 ```
 
 Cross-compiling for Windows requires `x86_64-w64-mingw32-g++`.
+
+On Windows, run these commands from Git Bash/MSYS, not from PowerShell:
+PowerShell resolves `find` to its own `find.exe`, so the vgmstream source
+list silently comes back empty and the core gets built without that
+backend (`USE_VGMSTREAM=1` then does nothing).
 
 Run `make clean` when switching platforms: object files are named the
 same on both, and Make has no way of knowing the compiler changed.
 
 Without `USE_PSF_ENGINE=1` the core builds without the aosdk engines, and
-the PSF and SSF formats are left out.
+the PSF and SSF formats are left out. The same applies to `USE_VGMSTREAM=1`
+and the streamed formats (XA, VAG, ADX, DSP, BRSTM...).
 
 For releases, always use the packaging targets instead of copying
 binaries by hand:
 
 ```sh
-make dist          # builds from scratch and updates dist-linux/
-make dist-windows  # same, for dist-windows/
-make dist-all      # both platforms
+make dist USE_VGMSTREAM=1          # builds from scratch and updates dist-linux/
+make dist-windows USE_VGMSTREAM=1  # same, for dist-windows/ (~2.6 MB stripped dll)
+make dist-all USE_VGMSTREAM=1      # both platforms
 ```
+
+Only the `dist*` targets strip the binary (`strip --strip-all`, using
+`x86_64-w64-mingw32-strip` on Windows). That is what brings the DLL down
+to ~2.6 MB; a plain `make all` binary deliberately keeps its debug
+symbols and is several MB larger.
 
 `info` lives at the repo root (`aolib_libretro.info`, single source of
 truth) and is copied into `dist-linux/`/`dist-windows/` by the packaging
-targets. Edit the root copy, not the ones under `dist/`.
+targets. Edit the root copy, not the ones under `dist/`..
 
 ## Architecture
 
@@ -250,10 +261,7 @@ formats in the table above: CD-XA, Sony VAG, CRI ADX/AHX, Nintendo
 GC/Wii DSP and BRSTM, FMOD FSB, EA SCHl, Ubisoft Jade, and the rest) —
 bnnm, kode54, Fastelbja, Ricardo Bravo and contributors, under an
 ISC-style license. Only the parsers this core can actually reach are
-vendored, computed automatically by `patches/vgmstream_closure.py`; the
-exact upstream commit and every local patch are documented in
-[Aolib/patches/VENDOR.md](deps/vgmstream/VENDOR.md) and
-[Aolib/patches/README.md](deps/patches/README.md).)
+vendored.
 
 **[aosdk](https://github.com/nmlgc/aosdk)** (PSF1, PSF2, SSF/Saturn) —
 R. Belmont and Richard Bannister created the SDK; nmlgc maintains it
