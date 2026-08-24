@@ -1,0 +1,130 @@
+#include "companion_files.h"
+#include "paths.h"
+#include "../vgmstream.h"
+#include "reader_text.h"
+#include "sf_utils.h"
+#include "string_utils.h"
+
+#define TXT_LINE_MAX 1024
+
+size_t read_key_file(uint8_t* buf, size_t buf_size, STREAMFILE* sf) {
+    STREAMFILE* sf_key = NULL;
+    size_t keysize;
+
+    /* try to open a keyfile using variations */
+    {
+        char keyname[PATH_LIMIT];
+        const char* keyname_dot;
+
+        // make "(name.ext)key"
+        get_streamfile_filename(sf, keyname, sizeof(keyname));
+        keyname_dot = strrchr(keyname, '.');
+        if (keyname_dot != NULL) {
+            strcat_v(keyname, sizeof(keyname), "key");
+        }
+        else {
+            // shouldn't be needed for extensionless files though
+            strcpy_v(keyname, sizeof(keyname), ".key");
+        }
+
+        // open "(current-path)(name.ext)key"
+        sf_key = open_streamfile_by_filename(sf, keyname);
+        if (sf_key) goto found;
+
+        // open "(current-path)(.ext)key"
+        sf_key = open_streamfile_by_filename(sf, keyname_dot);
+        if (sf_key) goto found;
+
+        // on Linux maybe could try to match case vs original extension, but for now just
+        // expect it to be like .HCAkey to avoid some extra opens
+
+        goto fail;
+    }
+
+found:
+    keysize = get_streamfile_size(sf_key);
+    if (keysize > buf_size) goto fail;
+
+    if (read_streamfile(buf, 0, keysize, sf_key) != keysize)
+        goto fail;
+
+    close_streamfile(sf_key);
+    return keysize;
+
+fail:
+    close_streamfile(sf_key);
+    return 0;
+}
+
+STREAMFILE* read_filemap_file(STREAMFILE* sf, int file_num) {
+    return read_filemap_file_pos(sf, file_num, NULL);
+}
+
+STREAMFILE* read_filemap_file_pos(STREAMFILE* sf, int file_num, int* p_pos) {
+    char filename[PATH_LIMIT];
+    off_t txt_offset, file_size;
+    STREAMFILE* sf_map = NULL;
+    int file_pos = 0;
+
+    sf_map = open_streamfile_by_filename(sf, ".txtm");
+    if (!sf_map) goto fail;
+
+    get_streamfile_filename(sf, filename, sizeof(filename));
+
+    txt_offset = read_bom(sf_map);
+    file_size = get_streamfile_size(sf_map);
+
+    /* read lines and find target filename, format is (filename): value1, ... valueN */
+    while (txt_offset < file_size) {
+        char line[TXT_LINE_MAX];
+        char key[TXT_LINE_MAX];
+        char val[TXT_LINE_MAX];
+        int ok, bytes_read, line_ok;
+
+        bytes_read = read_line(line, sizeof(line), txt_offset, sf_map, &line_ok);
+        if (!line_ok) goto fail;
+
+        txt_offset += bytes_read;
+
+        /* get key/val (ignores lead/trailing spaces, stops at comment/separator) */
+        ok = sscanf(line, " %[^\t#:] : %[^\t#\r\n] ", key, val);
+        if (ok != 2) { /* ignore line if no key=val (comment or garbage) */
+            /* better way? */
+            if (strcmp(line, "#@reset-pos") == 0) {
+                file_pos = 0;
+            }
+            continue;
+        }
+
+        if (strcmp(key, filename) == 0) {
+            int n;
+            char subval[TXT_LINE_MAX];
+            const char* current = val;
+
+            for (int i = 0; i <= file_num; i++) {
+                if (current[0] == '\0')
+                    goto fail;
+
+                ok = sscanf(current, " %[^\t#\r\n,]%n ", subval, &n);
+                if (ok != 1)
+                    goto fail;
+
+                if (i == file_num) {
+                    if (p_pos) *p_pos = file_pos;
+
+                    close_streamfile(sf_map);
+                    return open_streamfile_by_filename(sf, subval);
+                }
+
+                current += n;
+                if (current[0] == ',')
+                    current++;
+            }
+        }
+        file_pos++;
+    }
+
+fail:
+    close_streamfile(sf_map);
+    return NULL;
+}
