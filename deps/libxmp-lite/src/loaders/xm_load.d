@@ -1,0 +1,22 @@
+deps/libxmp-lite/src/loaders/xm_load.o: \
+ deps/libxmp-lite/src/loaders/xm_load.c \
+ deps/libxmp-lite/src/loaders/loader.h \
+ deps/libxmp-lite/src/loaders/../common.h deps/libxmp-lite/include/xmp.h \
+ deps/libxmp-lite/src/loaders/../effects.h \
+ deps/libxmp-lite/src/loaders/../format.h \
+ deps/libxmp-lite/src/loaders/../common.h \
+ deps/libxmp-lite/src/loaders/../hio.h \
+ deps/libxmp-lite/src/loaders/../callbackio.h \
+ deps/libxmp-lite/src/loaders/../memio.h \
+ deps/libxmp-lite/src/loaders/../hio.h deps/libxmp-lite/src/loaders/xm.h
+deps/libxmp-lite/src/loaders/loader.h:
+deps/libxmp-lite/src/loaders/../common.h:
+deps/libxmp-lite/include/xmp.h:
+deps/libxmp-lite/src/loaders/../effects.h:
+deps/libxmp-lite/src/loaders/../format.h:
+deps/libxmp-lite/src/loaders/../common.h:
+deps/libxmp-lite/src/loaders/../hio.h:
+deps/libxmp-lite/src/loaders/../callbackio.h:
+deps/libxmp-lite/src/loaders/../memio.h:
+deps/libxmp-lite/src/loaders/../hio.h:
+deps/libxmp-lite/src/loaders/xm.h:
