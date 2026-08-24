@@ -37,10 +37,11 @@ extern "C" {
 class PsfEngine final : public IAudioEngine {
 public:
     PsfEngine() noexcept {
-        AosdkPsxCoreGuard::acquire();
+        has_core_guard_ = AosdkPsxCoreGuard::acquire();
     }
 
     ~PsfEngine() override {
+        if (!has_core_guard_) return;   // nunca tocó el estado global
         if (started_) {
             psf_stop();
         }
@@ -58,6 +59,12 @@ public:
 
     bool open(const char* uri, const uint8_t* data, std::size_t size,
                IVFSBridge& vfs) override {
+        // Otro motor de esta familia sigue vivo: el estado de aosdk es de
+        // PROCESO (psx_ram/mipscpu/sat_ram/Musashi), así que abrir aquí lo
+        // corrompería. Se falla la carga y el llamante prueba con la
+        // entrada siguiente; antes esto era un assert que abortaba el
+        // proceso entero.
+        if (!has_core_guard_) return false;
         if (uri) {
             // Fichero suelto en disco (need_fullpath=true).
             if (!vfs.read_whole_file(uri, main_file_buffer_)) return false;
@@ -188,6 +195,9 @@ private:
         meta_.chip = "SPU";
     }
 
+    // false = otro motor de esta familia ya tenía el guard. Se falla la
+    // carga en open(); antes esto era un assert que abortaba RetroArch.
+    bool has_core_guard_ = false;
     bool started_ = false;
     std::vector<uint8_t> main_file_buffer_;
     TrackMetadata meta_;

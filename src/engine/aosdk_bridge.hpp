@@ -111,12 +111,23 @@ private:
 // assert es el backstop por si un camino futuro la rompe.
 class AosdkPsxCoreGuard {
 public:
-    static void acquire() noexcept {
+    // Devuelve false si ya hay uno vivo, y el llamante FALLA LA CARGA.
+    //
+    // El assert se conserva para las builds de test, pero no puede ser la
+    // única defensa: el Makefile compila con -O2 y SIN -DNDEBUG, así que en
+    // release el assert está activo y una violación aborta el proceso -- es
+    // decir, se lleva por delante RetroArch entero en vez de rechazar una
+    // pista. Para un core que aspira a ser de referencia eso es al revés de
+    // como debe ser: el assert avisa al desarrollador, el retorno protege al
+    // usuario.
+    [[nodiscard]] static bool acquire() noexcept {
         assert(!s_alive &&
             "Solo puede existir UN motor aosdk basado en psx.c (PsfEngine O "
             "Psf2Engine, nunca ambos) activo a la vez -- psx_ram/mipscpu son "
             "estado global de proceso compartido entre PSF1 y PSF2.");
+        if (s_alive) return false;
         s_alive = true;
+        return true;
     }
     static void release() noexcept { s_alive = false; }
 
@@ -138,12 +149,16 @@ private:
 // simultáneos por error.
 class AosdkSaturnCoreGuard {
 public:
-    static void acquire() noexcept {
+    // Mismo contrato que AosdkPsxCoreGuard::acquire(): false = ya hay uno
+    // vivo y hay que fallar la carga, no abortar el proceso.
+    [[nodiscard]] static bool acquire() noexcept {
         assert(!s_alive &&
             "Solo puede existir UN motor SsfEngine activo a la vez -- "
             "sat_ram/el núcleo M68000 (Musashi) son estado global de "
             "proceso, no de instancia C++.");
+        if (s_alive) return false;
         s_alive = true;
+        return true;
     }
     static void release() noexcept { s_alive = false; }
 
