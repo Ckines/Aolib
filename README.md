@@ -1,12 +1,14 @@
 # AOLIB
+A Libretro core for playing video game music in RetroArch, with a built-in graphical interface: a browsable track list, audio meters and playback.
 
-A Libretro core for playing video game music in RetroArch, with a built-in
-graphical interface: a browsable track list, VU meter, spectrum analyzer,
-and playback controls.
+- **Massive Format Coverage**  
+Extensive format compatibility: Over 50 supported formats, from classic chip-based console and arcade soundtracks to CD-quality streams. It is also compatible with tracker modules.
 
-It's not a console emulator — it's a player. Load a single file or a
-`.zip`/`.7z` containing a whole album, and it plays it in order, with no
-need for `.m3u` files.
+- **Zero-Friction Album Playback**  
+Drop a `.zip` or `.7z` file containing an entire soundtrack, and AOLIB plays it in order immediately. No external cue sheets or playlist files are ever required.
+
+- **Optimized Memory Management**  
+Handles albums up to 1.7 GB effortlessly — lazy-loads ZIPs (first 64KB per track) and optimizes 7z solid blocks, maintaining available RAM during playback in an optimized way for any system.
 
 ## Supported formats
 
