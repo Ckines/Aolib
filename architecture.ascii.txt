@@ -1,6 +1,6 @@
 ===================================================================================================
-                                     AOLIB – core architecture                                     
-                     retro_run() per frame: input ──> state ──> audio ──> video                    
+                                     AOLIB - core architecture
+                     retro_run() per frame: input ──> state ──> audio ──> video
 ===================================================================================================
 
                                      ┌────────────────────────┐
@@ -24,8 +24,8 @@
 │ ┌─ PER-CONTENT STATE / I/O ──────────────────────────────────────────────────────────────────┐ │
 │ │                                                                                            │ │
 │ │  ┌─ CoreContext (rebuilt) ──────┐     ┌────────────────────┐     ┌──────────────────────┐  │ │
-│ │  │ CoreOptions                  │     │     IVFSBridge     │     │  apply_ui_input()    │  │ │
-│ │  │ (zip_entries · frames)       │     │ (LibretroVFS) I/O  │     │  pad/keyboard->deck  │  │ │
+│ │  │ CoreOptions · archive_is_7z  │     │     IVFSBridge     │     │  apply_ui_input()    │  │ │
+│ │  │ zip_entries · prefetch · job │     │ (LibretroVFS) I/O  │     │  pad/keyboard->deck  │  │ │
 │ │  │        │                     │     └─────────┬──────────┘     └──────────┬───────────┘  │ │
 │ │  │        ▼                     │               │                           │              │ │
 │ │  │ unique_ptr<IAudioEngine>     │               ▼                           ▼              │ │
@@ -35,15 +35,30 @@
 │ │                                       └─────────┬──────────┘     └──────────────────────┘  │ │
 │ └─────────────────────────────────────────────────┼──────────────────────────────────────────┘ │
 │                                                   │ construct_engine_for()                     │
+│                                                   │ (vgmstream tried LAST: it claims generic   │
+│                                                   │ extensions like .str that other engines    │
+│                                                   │ should get first -- order is enforced by   │
+│                                                   │ checkup.sh                                 │
 │                                                   ▼                                            │
 │ ┌─ AUDIO ENGINES (IAudioEngine) ─────────────────────────────────────────────────────────────┐ │
 │ │                                                                                            │ │
-│ │  ┌────────────────┐  ┌────────────────┐  ┌─ aosdk (process-wide guard) ──────────────────┐ │ │
+│ │  ┌────────────────┐  ┌────────────────┐  ┌─── aosdk (process-wide guard) ────────────────┐ │ │
 │ │  │   GmeEngine    │  │  LibvgmEngine  │  │ ┌──────────────┐ ┌──────────────┐ ┌─────────┐ │ │ │
 │ │  │ SPC · NSF · GBS│  │ VGM · VGZ      │  │ │  PsfEngine   │ │  SsfEngine   │ │ Core    │ │ │ │
 │ │  │ HES · KSS...   │  │ (30+ chips)    │  │ │ PSF1 / PSF2  │ │ SSF / Saturn │ │ Guard   │ │ │ │
 │ │  └────────────────┘  └────────────────┘  │ └──────────────┘ └──────────────┘ └─────────┘ │ │ │
-│ │                                          └───────────────────────────────────────────────┘ │ │
+│ │  ┌────────────────┐                      │  acquire() -> bool: a busy guard FAILS        │ │ │
+│ │  │  libxmp-lite   │                      │  THE TRACK LOAD, not the process.             │ │ │
+│ │  │ .MOD.S3M.XM.IT │                      └───────────────────────────────────────────────┘ │ │
+│ │  └────────────────┘                                                                        │ │
+│ │                                                                                            │ │
+│ │  ┌──── VgmstreamEngine (ISC, last in the chain) ────────────────────────────────────────┐  │ │
+│ │  │  49 extensions / 45 parsers: XA · VAG/SVAG/VPK/MIB · ADX/AHX · GC-DSP/BRSTM          │  │ │
+│ │  │  AST · NDS STRM · RIFF/GENH · EA SCHl · CAF · FSB · GCub · MSS · ETC.                │  │ │
+│ │  │ ------------------------------------------------------------------------------------ │  │ │
+│ │  │  vgmstream_api (facade) --> vgmstream_vfs_adapter (STREAMFILE<->IVFSBridge)          │  │ │
+│ │  │  resample -> 44100 inside vgmstream; native rate in TrackMetadata                    │  │ │
+│ │  └──────────────────────────────────────────────────────────────────────────────────────┘  │ │
 │ └─────────────────────────────────────────────────┬──────────────────────────────────────────┘ │
 │                                                   │ render()                                   │
 │                                                   ▼                                            │
@@ -56,6 +71,16 @@
 │ │  └──────────┘      └──────────┘      └───────────┘      └──────────┘                       │ │
 │ │   * Reverb BEFORE gain; Analyzer AFTER (VU shows what is actually heard)                   │ │
 │ │                                                                                            │ │
+│ │  [ BACKGROUND WORK -- after the audio is handed over, on purpose ]                         │ │
+│ │  ┌──────────────────────────┐   ┌──────────────────────────┐                               │ │
+│ │  │ advance_zip_prefetch()   │   │ advance_duration_probe() │                               │ │
+│ │  │ inflates the NEXT entry, │   │ fills the track lengths  │                               │ │
+│ │  │ ~4 ms/frame budget       │   │ the list shows, 2 ms/fr. │                               │ │
+│ │  └──────────────────────────┘   └──────────────────────────┘                               │ │
+│ │   The frontend paces the core by blocking inside audio_batch_cb(), so                      │ │
+│ │   work placed after it uses slack that would otherwise go to vsync.                        │ │
+│ │   Prefetch has priority: only ONE extra entry is ever in flight.                           │ │
+│ │                                                                                            │ │
 │ │  [ VIDEO PIPELINE ]                                                                        │ │
 │ │  ┌──────────────┐      ┌──────────────┐      ┌──────────────┐                              │ │
 │ │  │  pad input   │ ───> │   UiModel    │ ───> │ ui::render() │ ───> video_refresh_cb        │ │
@@ -67,9 +92,60 @@
  Module legend:
  [Process state]       : Persists across games (UiModel, AudioAnalyzer, dsp::Reverb)
  [Per-content state]   : Destroyed and rebuilt per ROM (CoreContext, IVFSBridge, Zip, Render)
- [Audio engines]       : Implement IAudioEngine (GME, LibVGM, AOSDK)
+ [Audio engines]       : Implement IAudioEngine (GME, LibVGM, libxmp, AOSDK, vgmstream)
  [I/O & bridges]       : Integration with the Libretro API
  [Archive readers]     : enumerate_zip() (minizip 1.3.1, Store/Deflate, Zip64) and
                          enumerate_7z() (7-Zip SDK, Store/LZMA/LZMA2) both fill the
                          same std::vector<ZipEntry> -- downstream code (duration probing,
                          track switching) never distinguishes .zip from .7z.
+
+ vgmstream (deps/vgmstream, ISC, 33 formats -- see SUPPORTED_SYSTEMS.md):
+   src/engine/vgmstream_api.{hpp,cpp}   thin C++ facade; ONLY translation unit
+                                         that includes vgmstream's C headers
+   src/vgmstream_vfs_adapter.hpp        libstreamfile_t <-> IVFSBridge, two paths:
+                                         make_vfs() (disk, own cursor -- retro_vfs_seek()
+                                         returns 0/-1, not position) and make_memory()
+                                         (borrowed buffer, never copied)
+   src/engine/vgmstream_engine.hpp      IAudioEngine subclass; resamples to 44100
+                                         inside vgmstream; subsong = reopen-on-select
+   src/vgmstream_extensions.hpp         SINGLE extension list, shared by libretro.cpp
+                                         and zip_playlist.hpp (four separate copies
+                                         is how PSF2/SSF broke before)
+   tests/vgmstream_closure.py           meta/*.c must exactly match the init table --
+                                         run before touching either
+
+ (*) Lazy .zip materialization (streaming formats only, zip_playlist.hpp):
+   enumerate_zip() inflates only the first 64 KiB of a streaming-format entry
+   (ZipEntry::lazy) -- enough for format + duration in every case measured except
+   XA, which scans the whole file for its file+channel markers. The selected
+   track is materialize_zip_entry()'d in full on track change (~44-200 ms,
+   measured) and every other entry is release_zip_entry()'d back to its prefix,
+   so memory is the size of ONE track, not the album (SMG2: 1.74 GiB album ->
+   4.6 MB retained). PSF/GME/XMP entries are NOT lazy: their _lib resolution
+   assumes the whole buffer is present, and they are small enough that it
+   never mattered. ZipEntry::full_size is the real size even when .data holds
+   only the prefix; vgmstream_vfs_adapter reports that real size as
+   get_size(), and a read past the prefix returns short and sets a flag
+   (propagated across STREAMFILE::open() reopens) that tells the engine to
+   materialize and retry -- without this, formats that derive sample count
+   from file size would report a short, plausible, WRONG duration in silence.
+
+ (*) The two archive paths are lazy in different ways, and the asymmetry is deliberate:
+
+     .zip  Streaming entries are enumerated from a 64 KiB prefix only. The playing entry
+           is inflated in full; the NEXT one is inflated ahead of time, a slice per frame,
+           so a track change costs nothing in the audio loop. Deflate can be resumed
+           between frames, which is what makes that possible.
+
+     .7z   The whole album is extracted while loading. 7-Zip compresses in SOLID BLOCKS
+           (one test album: 61 entries in 5 blocks), so pulling out a single entry means
+           decompressing its entire block, and LZMA runs at ~23 MB/s with no resumable
+           decode. Measured on the same 250 MB album: lazy extraction turned an 11 s load
+           into 2.5 s, but made every track change cost 2.5 s inside the frame. Eager is
+           the correct answer for this container, not technical debt.
+
+ Duration probing: the track lengths shown in the list are metadata, never needed by the
+ audio path. They are probed incrementally during playback instead of up front, so
+ retro_load_game() no longer scales with album size. Entries routed to aosdk are the one
+ exception and stay eager: corlett.c keeps the fade counters in process-wide statics, so
+ probing a PSF while another one plays would corrupt the track that is being heard.
