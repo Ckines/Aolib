@@ -1,12 +1,12 @@
 # Software Information
 display_name = "Aolib"
 authors = "Ckines"
-supported_extensions = "spc|nsf|nsfe|vgm|vgz|gbs|hes|kss|sap|ay|gym|psf|minipsf|psf2|minipsf2|ssf|minissf|zip|7z"
+supported_extensions = "spc|nsf|nsfe|vgm|vgz|gbs|hes|kss|sap|ay|gym|mod|s3m|xm|it|psf|minipsf|psf2|minipsf2|ssf|minissf|zip|7z|xa|str|pxa|xai|vag|svag|vas|khv|vsv|psh|npsf|exst|sts|rxws|vpk|vgs|mib|mi4|mih|ild|bnk|mtaf|adx|ahx|spsd|adpcm|dsp|brstm|ast|hps|dtk|strm|genh|aifc|aud|cfn|ydsp|rstm|rsm|sng|asf|adp|ss2|ads|fsb|gcub|mss|wam|wac"
 corename = "Aolib"
 categories = "Music player"
 license = "GPLv2"
 permissions = ""
-display_version = "1.1.2"
+display_version = "1.2.0"
 
 # Hardware Information
 manufacturer = "Various"
@@ -21,4 +21,4 @@ core_options = "true"
 hw_render = "false"
 disk_control = "false"
 
-description = "A Libretro core for playing classic video game music in RetroArch, with a built-in graphical interface: a browsable track list, VU meter, spectrum analyzer, and playback controls. Plays SPC/NSF/GBS/HES/KSS/SAP/AY/GYM (libgme), VGM/VGZ (libvgm) and PSF/PSF2/SSF (aosdk). Accepts .zip and .7z albums and plays tracks in natural order."
+description = "A Libretro core for playing classic video game music in RetroArch, with a built-in graphical interface: a browsable track list, VU meter, spectrum analyzer, and playback controls. Plays SPC/NSF/GBS/HES/KSS/SAP/AY/GYM (libgme), VGM/VGZ (libvgm), MOD/S3M/XM/IT (libxmp-lite) PSF/PSF2/SSF (aosdk) and streamed audio -- CD-XA, Sony VAG, CRI ADX/AHX, Nintendo GC/Wii DSP and more (vgmstream). Accepts .zip and .7z albums and plays tracks in natural order."
