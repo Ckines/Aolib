@@ -70,3 +70,136 @@ except with Musashi/SCSP instead of R3000A/SPU.
 | **AY**  | ZX Spectrum / Amstrad CPC  |
 | **GYM** | Sega Mega Drive/Genesis  |
 
+## Via libxmp-lite (tracker modules)
+
+| Format | Tracker | Reported as "chip" |
+|---|---|---|
+| **MOD** | Protracker / Noisetracker / Soundtracker (Amiga) | `PAULA` |
+| **S3M** | Scream Tracker 3 | detected tracker |
+| **XM**  | Fast Tracker II | detected tracker |
+| **IT**  | Impulse Tracker | detected tracker |
+
+A MOD was written for the Amiga's Paula, so that is the chip named. S3M,
+XM and IT are software-mixed formats with no fixed sound hardware behind
+them: the CHIP field carries the tracker libxmp identifies inside the
+file (`OPENMPT`, `IMPULSE TRACKER`, ...), with the version number
+stripped.
+
+Only these four formats. Adding STM, MTM, MED or any other tracker
+format requires full libxmp, not just listing the extension.
+
+## Via vgmstream — streamed audio, 49 extensions / 45 parsers
+
+Not emulated chips: these are pre-recorded streams read off the disc, so
+what plays is the actual mastered audio rather than a chip simulation.
+The "codec" column is what does the decoding.
+
+Everything here is resampled to 44100 Hz inside vgmstream; the native
+rate is shown in the track comment.
+
+### PlayStation and CD-i
+
+| Format | Codec | Notes |
+|---|---|---|
+| **XA** | CD-XA ADPCM | PS1 and CD-i, raw 2352 sectors or RIFF CDXA. Interleaved file+channel markers appear as subsongs |
+| **VAG** | PS-ADPCM | Sony's SDK format, PS1 and PS2. Covers `.vag .vas .khv` and friends |
+| **BNK** | PS-ADPCM | Sony SPU banks |
+
+### PlayStation 2
+
+| Format | Codec | Notes |
+|---|---|---|
+| **SVAG (KCET)** | PS-ADPCM | Konami Tokyo |
+| **NPSF** | PS-ADPCM | Namco NuSound |
+| **EXST** | PS-ADPCM | Team Ico |
+| **RXWS** | PS-ADPCM | Okage, Genji |
+| **VPK** | PS-ADPCM | Santa Monica S. |
+| **VSV** | PS-ADPCM | Square Enix. Also `.psh` |
+| **VGS** | PS-ADPCM | Harmonix |
+| **MIB+MIH** | PS-ADPCM | SCEE MultiStream |
+| **ILD** | PS-ADPCM | (Tose) |
+| **VS/STR** | PS-ADPCM | Squaresoft |
+| **MTAF** | MTAF | Konami |
+| **MIB / MI4** | PS-ADPCM | .mih provides exact params; else inferred from data. |
+
+### Sega — Saturn, Dreamcast, Naomi arcade
+
+| Format | Codec | Notes |
+|---|---|---|
+| **STR (Sega)** | AICA ADPCM | Dreamcast sound driver streams |
+| **SPSD** | AICA ADPCM | Crazy Taxi, Guilty Gear X, Virtua Tennis 2 |
+| **Naomi ADPCM** | AICA ADPCM | Naomi / Naomi 2 arcade, F355 Challenge |
+| **ADX** | CRI ADX | The widest reach here: Dreamcast, Saturn, Naomi, PS2, GameCube |
+| **AHX** | CRI AHX | CRI's voice companion to ADX |
+
+### Nintendo — GameCube, Wii, DS
+
+| Format | Codec | Notes |
+|---|---|---|
+| **DSP** | GC DSP ADPCM | The base format everything else here builds on |
+| **BRSTM** | GC DSP ADPCM | The Wii standard |
+| **AST** | GC DSP / PCM | Super Mario Galaxy, Pac-Man Vs. |
+| **HALPST** | GC DSP ADPCM | Kirby Air Ride, Killer7 (HAL engine) |
+| **DTK** | GC DSP ADPCM | Headerless, read straight off the disc |
+| **Cstr** | GC DSP ADPCM | Star Fox Assault, Donkey Konga (Namco NuSound) |
+| **RS03** | GC DSP ADPCM | Metroid Prime 2 |
+| **NDS STRM** | IMA / PCM | Nintendo DS streaming standard |
+
+### Cross-platform classics and generic containers
+
+| Format | Codec | Notes |
+|---|---|---|
+| **EA 1SNH** | EA ADPCM | Electronic Arts' classic format, PS1/Saturn/PC era |
+| **WS AUD** | Westwood ADPCM | Command & Conquer and its console ports |
+| **RIFF** | PCM / IMA / MSADPCM | Broad by itself: around 50 extensions across PS2/Xbox/GC |
+| **GENH** | many | Generic header for raw PCM/ADPCM; the safety net for headerless rips |
+
+### A note on guessed formats
+
+`.mib` and `.mi4` carry no header at all: sample rate, channel count and
+interleave live in a separate `.mih`. When that file is present the values
+are exact. When it isn't — the common case in circulating rips —
+`ps_headerless` infers interleave and channels by inspecting the data and
+takes the rate from the extension. It is a heuristic and upstream says so
+plainly, but the alternative for those files is silence.
+
+Sanity-checked rather than assumed: a wrong interleave interleaves blocks
+from different channels and drives high-frequency energy up. Measured as
+mean |x[n]-x[n-1]| over mean |x|, the guessed files land at 0.07–0.26,
+the same range as VPK and SVAG files that do carry real headers.
+
+### Not supported, and why
+
+**ATRAC3 (`.at3`)** is reachable in vgmstream only through FFmpeg
+(`coding_FFmpeg`). FFmpeg cannot be built from this project's Makefile
+and ships as prebuilt libraries, which breaks the vendoring rule that
+every dependency is C sources compiled here. Supporting it would need a
+standalone ATRAC3 decoder, not a switch.
+
+**HCA and FSB5** decode fine and cost about 16 KB each, so size is not
+the reason. They are 2011-and-later formats — modern CRI and modern FMOD
+— and sit outside the CD-era scope this list was chosen for.
+
+**TXTH and TXTP** let a user describe headerless formats with a text
+file. TXTH is the strongest candidate for a future addition, since
+`meta/xa.c` notes that XA ripped as ISO 2048 sectors can only be played
+through it. It is held back because `open_streamfile_by_absname()`
+(`util/sf_utils.c`) will open arbitrary absolute paths named by that text
+file, which is content-directed I/O and deserves its own sandbox rather
+than being slipped in.
+
+## vgmstream — added 1.2.0
+
+| Extension | Format | 
+|-----------|--------|
+| `.cfn` | CAF |
+| `.sng` | EA SCHl | multi-platform (EA) |
+| `.rstm`, `.rsm` | RSTM (Rockstar) |
+| `.ydsp` | Yuke's DSP |
+| `.adp` | GameCube DTK |
+| `.fsb` | FMOD Sound Bank (FSB3) |
+| `.gcub` | GCub | Sega | 
+| `.mss` | Double DSP, `.mss` layout | Free Radical Design | 
+| `.wam`, `.wac` | Ubisoft Jade RIFF |
+
+Verified against 543 files across five complete rips.
