@@ -28,6 +28,13 @@ VGMSTREAM * init_vgmstream_ps_headerless(STREAMFILE *streamFile) {
     int     forceNoLoop=0;
     int     gotEmptyLine=0;
 
+    /* Lectura DETERMINISTA del interleave a partir de las marcas de
+     * loop/fin (ver el bloque tras el bucle). Si sale, manda sobre todo lo
+     * que adivina la heuristica. */
+    off_t   markerPrev = -1;
+    off_t   markerGap = 0;
+    int     interleaveFromFlags = 0;
+
     int i, channel_count=0;
 
 
@@ -84,10 +91,27 @@ VGMSTREAM * init_vgmstream_ps_headerless(STREAMFILE *streamFile) {
                         bDoUpdateInterleave=0;
                         interleave=readOffset-0x10;
                     }
-                    if(readOffset-0x10 == channel_count*interleave) {
+                    if(interleave > 0 && readOffset-0x10 == channel_count*interleave) {
                         doChannelUpdate=1;
                     }
                 }
+            }
+
+            /* Distancia MINIMA entre dos frames con marca (flag distinto de
+             * 0x00 "nada" y 0x02 "normal"). El codificador escribe esas
+             * marcas en la misma posicion relativa dentro del bloque de
+             * CADA canal, asi que dos consecutivas caen a un bloque exacto:
+             * la distancia minima ES el interleave, leida y no adivinada.
+             * Va aqui dentro porque el bucle ya recorre todos los frames y
+             * ya mira este byte -- no cuesta ni una lectura mas. */
+            if(testBuffer[0x01]!=0x00 && testBuffer[0x01]!=0x02 &&
+               !(testBuffer[0x01]==0x03 && testBuffer[0x03]==0x77)) {
+                const off_t here = readOffset-0x10;
+                if(markerPrev >= 0) {
+                    const off_t gap = here - markerPrev;
+                    if(markerGap == 0 || gap < markerGap) markerGap = gap;
+                }
+                markerPrev = here;
             }
 
             // Loop Start ...
@@ -127,12 +151,53 @@ VGMSTREAM * init_vgmstream_ps_headerless(STREAMFILE *streamFile) {
     if(channel_count==0)
         channel_count=1;
 
+    /* EL INTERLEAVE, LEIDO DE LAS MARCAS EN VEZ DE ADIVINADO
+     *
+     * Todo lo que hay debajo de aqui es heuristica: busca bloques iguales al
+     * primero y supone que el hueco entre dos de ellos es el limite de un
+     * canal. Eso falla de dos maneras opuestas y las dos se han visto en
+     * rips reales: un silencio incidental se confunde con un limite (sale
+     * un interleave inventado) o no hay ningun bloque repetido y no sale
+     * nada. La distancia entre marcas no adivina: las escribe el
+     * codificador, una por bloque y canal, siempre en la misma posicion
+     * relativa, asi que dos consecutivas estan separadas justo un bloque.
+     *
+     * Se exige que el candidato ademas CUADRE con el tamano del fichero:
+     * multiplo de 0x10 y que parta el fichero en un numero entero y PAR de
+     * bloques, que es lo que obliga la propia definicion de entrelazado a
+     * dos canales. Un hueco casual no suele cuadrar; uno estructural,
+     * siempre.
+     *
+     * Medido sobre las 147 pistas .MIB de la biblioteca, dos juegos con
+     * estructuras que no se parecen en nada:
+     *   OutRun 2006 (67 pistas): 0x2000 en las 67 -- el mismo valor al que
+     *     llegaba el saneado de mas abajo, o sea que no cambia nada.
+     *   TimeSplitters 2 (80 pistas): 52 valores DISTINTOS entre 0x61c0 y
+     *     0x7480, ninguno potencia de dos, uno por pista. Aqui el saneado
+     *     los tiraba y los sustituia por 0x2000, y ese corte cada 0x2000
+     *     rompiendo la prediccion ADPCM es lo que se oia entrecortado.
+     * Contrastado decodificando: con estos valores la correlacion entre los
+     * dos canales sale 0,38-0,96 (musica estereo de verdad, los dos canales
+     * comparten la senal); con cualquier otro candidato se queda en 0,0-0,17
+     * (dos picadillos sin relacion). */
+    if (markerGap >= 0x100 && (markerGap % 0x10) == 0 &&
+        (fileLength % (size_t)markerGap) == 0 &&
+        ((fileLength / (size_t)markerGap) % 2) == 0) {
+        interleave = markerGap;
+        channel_count = 2;
+        interleaveFromFlags = 1;
+    }
+
     // Calc Loop Points & Interleave ...
     if(loopStartPointsCount>=2) {
         // can't get more then 0x10 loop point !
         if(loopStartPointsCount<=0x0F) {
             // Always took the first 2 loop points
-            interleave=loopStartPoints[1]-loopStartPoints[0];
+            /* el interleave leido de las marcas manda: esta resta es la
+             * misma idea pero mirando solo el flag 0x06 y sin comprobar que
+             * cuadre con el tamano del fichero */
+            if(!interleaveFromFlags)
+                interleave=loopStartPoints[1]-loopStartPoints[0];
             loopStart=loopStartPoints[1];
 
             // Can't be one channel .mib with interleave values
@@ -164,6 +229,7 @@ VGMSTREAM * init_vgmstream_ps_headerless(STREAMFILE *streamFile) {
     if(forceNoLoop)
         loopEnd=0;
 
+    // Can't be one channel .mib with interleave values
     if(interleave>0x10 && channel_count==1)
         channel_count=2;
 
@@ -171,7 +237,11 @@ VGMSTREAM * init_vgmstream_ps_headerless(STREAMFILE *streamFile) {
         interleave=0x10;
 
     // further check on channel_count ...
-    if(gotEmptyLine) {
+    /* con el interleave leido de las marcas el numero de canales ya sale de
+     * que el fichero se parta en un numero par de bloques; este recuento de
+     * bloques iguales al primero solo sabe contar los que van seguidos al
+     * principio y en TimeSplitters 2 daria de mas (empiezan en silencio) */
+    if(gotEmptyLine && !interleaveFromFlags) {
         int newChannelCount = 0;
 
         readOffset=0;
@@ -193,13 +263,18 @@ VGMSTREAM * init_vgmstream_ps_headerless(STREAMFILE *streamFile) {
             channel_count=newChannelCount;
     }
 
-    /* the interleave above comes out of offset arithmetic and can land on any
-     * value at all. A PS2 interleave is a power of two and a 0x10 multiple;
-     * anything else means the guess failed, and playing on with it shreds the
-     * audio. Fall back to 0x2000, which is what ps_check_format() already
-     * treats as the canonical block size at the top of this function.
-     * Mono is left alone: with layout_none the interleave is not used. */
-    if (channel_count > 1 &&
+    /* Red de seguridad SOLO para el interleave ADIVINADO: sale de aritmetica
+     * de offsets y puede caer en cualquier valor. Si no parece un bloque de
+     * PS2 (potencia de dos, multiplo de 0x10) la adivinanza fallo, y seguir
+     * con el destroza el audio; se cae a 0x2000, que es el tamano de bloque
+     * que ps_check_format() ya da por canonico al principio de la funcion.
+     *
+     * NO se aplica al interleave leido de las marcas: ese no es una
+     * adivinanza, ya viene comprobado contra el tamano del fichero, y
+     * exigirle potencia de dos es justo lo que rompia TimeSplitters 2 --
+     * sus 80 pistas traen 52 interleaves distintos entre 0x61c0 y 0x7480 y
+     * ninguno lo es. Mono se deja en paz: con layout_none no se usa. */
+    if (!interleaveFromFlags && channel_count > 1 &&
         (interleave < 0x800 || interleave > 0x20000 ||
          (interleave & (interleave - 1)) != 0))
         interleave = 0x2000;

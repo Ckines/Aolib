@@ -37,7 +37,7 @@ extern "C" {
 class PsfEngine final : public IAudioEngine {
 public:
     PsfEngine() noexcept {
-        has_core_guard_ = AosdkPsxCoreGuard::acquire();
+        has_core_guard_ = aosdk_acquire_guards<AosdkPsxCoreGuard>();
     }
 
     ~PsfEngine() override {
@@ -46,7 +46,7 @@ public:
             psf_stop();
         }
         AosdkLibResolver::uninstall();
-        AosdkPsxCoreGuard::release();
+        aosdk_release_guards<AosdkPsxCoreGuard>();
     }
 
     // Debe llamarse ANTES de open() si el fichero principal viene de un
@@ -82,13 +82,12 @@ public:
             return false;
         }
 
-        // Longitud mínima de una cabecera Corlett: 16 bytes ("PSF" +
-        // versión(1) + reserved_size(4) + program_size(4) + crc32(4)).
-        // Imprescindible: con 0 bytes exactos, corlett_decode_lib()
-        // desreferencia input[0] sin comprobar la longitud (código
-        // vendorizado, no se toca). read_whole_file() no puede filtrarlo
-        // porque para él leer 0 bytes es un éxito trivial.
-        if (main_file_buffer_.size() < 16) {
+        // La cabecera corlett se valida ENTERA, no solo su longitud: los
+        // tamaños que declara son los que corlett_decode_lib() usa sin
+        // comprobar, y un fichero truncado o corrupto mata el proceso. Ver
+        // aosdk_corlett_header_ok() en aosdk_bridge.hpp, con la medición.
+        if (!aosdk_corlett_header_ok(main_file_buffer_.data(),
+                                      main_file_buffer_.size(), &open_error_)) {
             AosdkLibResolver::uninstall();
             return false;
         }
@@ -158,6 +157,9 @@ public:
     const TrackMetadata& metadata() const noexcept override { return meta_; }
     const char* engine_name() const noexcept override { return "aosdk-psf1"; }
 
+public:
+    const std::string& last_open_error() const noexcept { return open_error_; }
+
 private:
     void refresh_metadata() noexcept {
         meta_ = TrackMetadata{};
@@ -197,6 +199,11 @@ private:
 
     // false = otro motor de esta familia ya tenía el guard. Se falla la
     // carga en open(); antes esto era un assert que abortaba RetroArch.
+    // Motivo del último fallo de open(), cuando lo hay. No forma parte de
+    // IAudioEngine: se consulta sobre el puntero concreto antes de
+    // devolverlo, igual que LibvgmEngine::last_open_error().
+    std::string open_error_;
+
     bool has_core_guard_ = false;
     bool started_ = false;
     std::vector<uint8_t> main_file_buffer_;

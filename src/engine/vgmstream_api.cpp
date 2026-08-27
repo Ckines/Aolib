@@ -8,6 +8,11 @@
 extern "C" {
 #include "libvgmstream.h"
 #include "base/resampler.h"
+
+// Interruptor del modo sin enumerar de meta/xa.c. No esta en ninguna
+// cabecera de vgmstream porque no es de vgmstream: es un anadido de AOLIB
+// sobre la copia vendorizada (ver el bloque AOLIB de ese fichero).
+void xa_set_fast_open(int on);
 }
 
 namespace aolib {
@@ -46,6 +51,18 @@ Handle open(void* sf, int subsong, const OpenConfig& cfg) {
     vcfg.output_sample_rate = cfg.output_rate;
     vcfg.resampler_type     = cfg.output_rate > 0 ? RESAMPLER_TYPE_SINC : 0;
     libvgmstream_setup(lib, &vcfg);
+
+    // El interruptor de xa.c es una global de proceso -- no hay por donde
+    // pasarle opciones a un parser de vgmstream -- asi que se pone y se
+    // quita AQUI, alrededor de la unica llamada que la mira, igual que
+    // AosdkFadeScope hace con las estaticas de corlett.c. Sin la
+    // envoltura, un fallo a medias dejaria el modo puesto para la
+    // siguiente apertura, que podria no ser de un CD.
+    struct XaFastOpenScope {
+        explicit XaFastOpenScope(bool on) : on_(on) { if (on_) xa_set_fast_open(1); }
+        ~XaFastOpenScope() { if (on_) xa_set_fast_open(0); }
+        bool on_;
+    } xa_scope(cfg.xa_fast_open);
 
     if (libvgmstream_open_stream(lib, static_cast<libstreamfile_t*>(sf), subsong) < 0) {
         libvgmstream_free(lib);

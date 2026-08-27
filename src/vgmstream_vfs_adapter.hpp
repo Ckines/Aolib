@@ -5,7 +5,7 @@
 // maps it onto the two shapes content actually arrives in.
 //
 //   make_vfs(...)     a loose file on disk, read through IVFSBridge.
-//   make_memory(...)  a buffer already in RAM, which is how .zip and .7z
+//   make_memory(...)  a buffer already in RAM, which is how .zip and .chd
 //                     entries arrive (ZipEntry::data holds the whole
 //                     decompressed member).
 //
@@ -307,7 +307,7 @@ inline libstreamfile_t* make_vfs(IVFSBridge& vfs, const std::string& path) {
     return sf;
 }
 
-// Buffer already in RAM: a .zip/.7z entry, or anything read whole. BORROWED,
+// Buffer already in RAM: a .zip/.chd entry, or anything read whole. BORROWED,
 // never copied -- 'data' must outlive the streamfile. ZipEntry::data does:
 // the playlist owns it for as long as the archive is loaded. 'name' needs
 // the entry's extension for the same reason as above. 'siblings' may be

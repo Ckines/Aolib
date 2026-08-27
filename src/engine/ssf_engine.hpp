@@ -42,7 +42,7 @@ extern "C" {
 class SsfEngine final : public IAudioEngine {
 public:
     SsfEngine() noexcept {
-        has_core_guard_ = AosdkSaturnCoreGuard::acquire();
+        has_core_guard_ = aosdk_acquire_guards<AosdkSaturnCoreGuard>();
     }
 
     ~SsfEngine() override {
@@ -51,7 +51,7 @@ public:
             ssf_stop();
         }
         AosdkLibResolver::uninstall();
-        AosdkSaturnCoreGuard::release();
+        aosdk_release_guards<AosdkSaturnCoreGuard>();
     }
 
     // Mismo mecanismo que PsfEngine/Psf2Engine: debe llamarse ANTES de
@@ -79,8 +79,9 @@ public:
             return false;
         }
 
-        // Mínimo de cabecera Corlett; ver psf_engine.hpp::open().
-        if (main_file_buffer_.size() < 16) {
+        // Cabecera Corlett completa; ver aosdk_corlett_header_ok().
+        if (!aosdk_corlett_header_ok(main_file_buffer_.data(),
+                                      main_file_buffer_.size(), &open_error_)) {
             AosdkLibResolver::uninstall();
             return false;
         }
@@ -132,6 +133,9 @@ public:
     const TrackMetadata& metadata() const noexcept override { return meta_; }
     const char* engine_name() const noexcept override { return "aosdk-ssf"; }
 
+public:
+    const std::string& last_open_error() const noexcept { return open_error_; }
+
 private:
     void refresh_metadata() noexcept {
         meta_ = TrackMetadata{};
@@ -165,6 +169,11 @@ private:
 
     // false = otro motor de esta familia ya tenía el guard. Se falla la
     // carga en open(); antes esto era un assert que abortaba RetroArch.
+    // Motivo del último fallo de open(), cuando lo hay. No forma parte de
+    // IAudioEngine: se consulta sobre el puntero concreto antes de
+    // devolverlo, igual que LibvgmEngine::last_open_error().
+    std::string open_error_;
+
     bool has_core_guard_ = false;
     bool started_ = false;
     std::vector<uint8_t> main_file_buffer_;

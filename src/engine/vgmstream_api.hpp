@@ -56,6 +56,13 @@ struct OpenConfig {
     // Resamples inside vgmstream so the core can stay pinned at one rate.
     // 0 = keep the stream's native rate (37800 for XA, 32000 for GC DSP...).
     int    output_rate  = 0;
+
+    // XA de un CD: abrir SIN enumerar los subsongs. Enumerarlos obliga a
+    // xa.c a recorrer el fichero entero, y dentro de un .chd eso es
+    // descomprimirlo entero antes de la primera muestra (2,5 s medidos en
+    // un fichero de 100 MB, el 98 % del tiempo de carga de ese disco).
+    // Ver el bloque AOLIB de deps/vgmstream/meta/xa.c.
+    bool   xa_fast_open = false;
 };
 
 // 'sf' is a libstreamfile_t* built by the caller. Returns nullptr on

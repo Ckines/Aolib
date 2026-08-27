@@ -46,7 +46,7 @@ extern "C" { extern int iUseReverb; }
 class Psf2Engine final : public IAudioEngine {
 public:
     Psf2Engine() noexcept {
-        has_core_guard_ = AosdkPsxCoreGuard::acquire();
+        has_core_guard_ = aosdk_acquire_guards<AosdkPsxCoreGuard>();
     }
 
     ~Psf2Engine() override {
@@ -55,7 +55,7 @@ public:
             psf2_stop();
         }
         AosdkLibResolver::uninstall();
-        AosdkPsxCoreGuard::release();
+        aosdk_release_guards<AosdkPsxCoreGuard>();
     }
 
     // Ver PsfEngine::set_sibling_lookup. El tag se resuelve dentro de
@@ -82,8 +82,9 @@ public:
             return false;
         }
 
-        // Mínimo de cabecera Corlett; ver psf_engine.hpp::open().
-        if (main_file_buffer_.size() < 16) {
+        // Cabecera Corlett completa; ver aosdk_corlett_header_ok().
+        if (!aosdk_corlett_header_ok(main_file_buffer_.data(),
+                                      main_file_buffer_.size(), &open_error_)) {
             AosdkLibResolver::uninstall();
             return false;
         }
@@ -162,6 +163,9 @@ public:
         iUseReverb = enabled ? 1 : 0;
     }
 
+public:
+    const std::string& last_open_error() const noexcept { return open_error_; }
+
 private:
     void refresh_metadata() noexcept {
         meta_ = TrackMetadata{};
@@ -198,6 +202,11 @@ private:
 
     // false = otro motor de esta familia ya tenía el guard. Se falla la
     // carga en open(); antes esto era un assert que abortaba RetroArch.
+    // Motivo del último fallo de open(), cuando lo hay. No forma parte de
+    // IAudioEngine: se consulta sobre el puntero concreto antes de
+    // devolverlo, igual que LibvgmEngine::last_open_error().
+    std::string open_error_;
+
     bool has_core_guard_ = false;
     bool started_ = false;
     std::vector<uint8_t> main_file_buffer_;

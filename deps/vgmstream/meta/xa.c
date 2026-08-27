@@ -6,6 +6,145 @@
 static int xa_read_subsongs(STREAMFILE* sf, int target_subsong, uint32_t start, uint32_t* p_stream_offset, uint32_t* p_stream_size);
 static int xa_check_format(STREAMFILE* sf, off_t offset, int is_blocked);
 
+/* ---------------------------------------------------------------------
+ * AOLIB: apertura sin enumerar (ver herramientas_locales/LEEME.txt)
+ *
+ * xa_read_subsongs() recorre el fichero ENTERO para contar los subsongs, y
+ * en un CD dentro de un .chd eso es descomprimir el fichero entero antes de
+ * oir la primera muestra: 2,49 s medidos para BGM1.XA de G. Darius (100 MB),
+ * que era el 98 % del tiempo de carga del disco. Y no se puede acelerar --
+ * va a la velocidad a la que libchdr descomprime hunks de LZMA (38 MB/s).
+ *
+ * Con este modo se abre mirando solo hasta el primer sector de audio: la
+ * capa de bloques (layout/blocked_xa.c) ya descarta sola los sectores de
+ * otros canales comparando file+channel contra codec_config, asi que el
+ * audio sale correcto sin haber contado nada.
+ *
+ * Lo que NO sale de aqui es cuantos subsongs hay ni cuanto dura la pista;
+ * de eso se encarga el escaneo propio del core, troceado por frames.
+ *
+ * Es estado global de proceso, como el de corlett.c: se pone y se quita
+ * alrededor de UNA apertura, desde un solo hilo. Ver la envoltura RAII en
+ * src/engine/vgmstream_api.cpp.
+ * --------------------------------------------------------------------- */
+static int xa_fast_open_enabled = 0;
+
+void xa_set_fast_open(int on) { xa_fast_open_enabled = on; }
+
+/* Igual que en xa_read_subsongs() y block_update_xa(). */
+static int xa_is_audio_sector(uint8_t submode) {
+    return !(submode & 0x08) && (submode & 0x04) && !(submode & 0x02);
+}
+
+/* Localiza el primer sector de audio y ESTIMA cuantos sectores del fichero
+ * son de ese mismo canal, que es lo unico que hace falta para la duracion:
+ * num_samples sale de (stream_size / 0x930), o sea del numero de sectores.
+ *
+ * La estimacion no es un palo de ciego. En CD-XA los canales se entrelazan
+ * con una proporcion FIJA (la impone la velocidad del lector frente a la
+ * del decodificador), asi que la proporcion medida en los primeros 1024
+ * sectores es la del fichero entero. Y si dentro de esa muestra aparece la
+ * marca de fin de canal (submode bit 7) la cuenta ya no es estimada sino
+ * exacta, que es lo que pasa con los ficheros cortos.
+ *
+ * Acotado a 2048 sectores (4,8 MB, unos 130 ms descomprimiendo desde un
+ * .chd) para que el coste sea constante y no proporcional al fichero, que
+ * es justo lo que se venia a evitar. */
+static int xa_fast_scan(STREAMFILE* sf, uint32_t start,
+                        uint32_t* p_offset, uint32_t* p_size) {
+    const size_t sector_size = 0x930;
+    const uint32_t max_find  = 8192;   /* 19 MB buscando el primer audio */
+    const uint32_t max_probe = 2048;   /* muestra para la proporcion */
+    uint32_t file_size = get_streamfile_size(sf);
+    uint32_t offset = start;
+    uint16_t target_config = 0;
+    int found = 0;
+
+    /* 1) el primer sector de audio: fija el canal objetivo */
+    for (uint32_t n = 0; n < max_find && offset + sector_size <= file_size; n++) {
+        uint32_t info = read_u32be(offset + 0x10, sf);
+        uint8_t  chan = (info >> 16) & 0xFF;
+        uint8_t  sub  = (info >>  8) & 0xFF;
+        if (xa_is_audio_sector(sub) && chan != 0xFF) {
+            target_config = (info >> 16) & 0xFFFF;   /* file + channel */
+            found = 1;
+            break;
+        }
+        offset += sector_size;
+    }
+    if (!found) return 0;
+    *p_offset = offset;
+
+    /* 2) proporcion de sectores de ESE canal */
+    {
+        uint32_t restantes = (uint32_t)((file_size - offset) / sector_size);
+        uint32_t vistos = 0, propios = 0, o = offset;
+        int exacto = 0;
+
+        while (vistos < max_probe && o + sector_size <= file_size) {
+            uint32_t info = read_u32be(o + 0x10, sf);
+            uint16_t cfg  = (info >> 16) & 0xFFFF;
+            uint8_t  sub  = (info >>  8) & 0xFF;
+            vistos++;
+            if (xa_is_audio_sector(sub) && cfg == target_config) {
+                propios++;
+                if (sub & 0x80) { exacto = 1; break; }  /* fin de este canal */
+            }
+            o += sector_size;
+        }
+        if (propios == 0) return 0;
+
+        uint32_t sectores;
+        if (exacto || vistos >= restantes) {
+            sectores = propios;                       /* contado, no estimado */
+        }
+        else {
+            /* Hasta donde llega el canal. Sin esto la proporcion se
+             * extrapola al fichero ENTERO, y en un contenedor con varias
+             * canciones eso multiplica la duracion: BGM1.XA de G. Darius
+             * lleva 7 canales y declaraba 283 s en vez de 22,6, o sea
+             * cuatro minutos de silencio detras de la pista.
+             *
+             * Busqueda binaria del ultimo sector del canal, mirando una
+             * VENTANA en cada paso y no un sector suelto: los canales van
+             * entrelazados, asi que un sector concreto puede no ser suyo
+             * aun estando dentro de su tramo. Con periodos de entrelazado
+             * de 8 a 32 sectores, una ventana de 64 contesta de sobra.
+             * Cuesta log2(N)*64 sectores -- unos 500 en un fichero de
+             * 18.000 -- en vez de los N que costaria recorrerlo. */
+            const uint32_t window = 64;
+            uint32_t lo = 0, hi = restantes;
+            while (hi - lo > window) {
+                uint32_t mid = lo + (hi - lo) / 2;
+                uint32_t n = (hi - mid < window) ? (hi - mid) : window;
+                uint32_t p = offset + mid * (uint32_t)sector_size;
+                int visto_aqui = 0;
+                for (uint32_t k = 0; k < n; k++) {
+                    uint32_t info = read_u32be(p + 0x10, sf);
+                    uint16_t cfg  = (info >> 16) & 0xFFFF;
+                    uint8_t  sub  = (info >>  8) & 0xFF;
+                    if (xa_is_audio_sector(sub) && cfg == target_config) { visto_aqui = 1; break; }
+                    p += (uint32_t)sector_size;
+                }
+                if (visto_aqui) lo = mid; else hi = mid;
+            }
+            /* 'hi' es el primer sector a partir del cual ya no hay nada de
+             * este canal: ese es el tramo sobre el que aplicar la
+             * proporcion medida en la cabeza. */
+            {
+                uint32_t tramo = (hi > 0) ? hi : restantes;
+                if (vistos >= tramo) sectores = propios;
+                else sectores = (uint32_t)((uint64_t)propios * tramo / vistos);
+            }
+        }
+
+        if (sectores < 1) sectores = 1;
+        if (sectores > restantes) sectores = restantes;
+        *p_size = sectores * (uint32_t)sector_size;
+    }
+    return 1;
+}
+
 /* XA - from Sony PS1 and Philips CD-i CD audio */
 VGMSTREAM* init_vgmstream_xa(STREAMFILE* sf) {
     VGMSTREAM* vgmstream = NULL;
@@ -55,8 +194,19 @@ VGMSTREAM* init_vgmstream_xa(STREAMFILE* sf) {
 
     /* find subsongs as XA can interleave sectors using 'file' and 'channel' makers (see blocked_xa.c) */
     if (/*!is_riff &&*/ is_blocked) {
-        total_subsongs = xa_read_subsongs(sf, target_subsong, start_offset, &start_offset, &stream_size);
-        if (total_subsongs <= 0) goto fail;
+        /* AOLIB: sin enumerar cuando el core lo pide (ver arriba). Solo para
+         * el primer subsong: pedir el subsong N exige haberlos contado. */
+        if (xa_fast_open_enabled && target_subsong <= 1) {
+            uint32_t audio_offset = 0, audio_size = 0;
+            if (!xa_fast_scan(sf, start_offset, &audio_offset, &audio_size)) goto fail;
+            start_offset = audio_offset;
+            stream_size  = audio_size;
+            total_subsongs = 1;
+        }
+        else {
+            total_subsongs = xa_read_subsongs(sf, target_subsong, start_offset, &start_offset, &stream_size);
+            if (total_subsongs <= 0) goto fail;
+        }
     }
     else {
         stream_size = get_streamfile_size(sf) - start_offset;
