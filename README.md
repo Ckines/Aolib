@@ -5,10 +5,13 @@ A Libretro core for playing video game music in RetroArch, with a built-in graph
 Extensive format compatibility: Over 50 supported formats, from classic chip-based console and arcade soundtracks to CD-quality streams. It is also compatible with tracker modules.
 
 - **Zero-Friction Album Playback**  
-Drop a `.zip` or `.7z` file containing an entire soundtrack, and AOLIB plays it in order immediately. No external cue sheets or playlist files are ever required.
+Drop a `.zip` containing an entire soundtrack, and AOLIB plays it in order immediately. No external cue sheets or playlist files are ever required.
+
+- **PlayStation Discs, Straight from the `.chd`**  
+Open a PS1 disc image and AOLIB finds its music: Red Book CD-DA tracks and the CD-XA audio buried in the data track, without extracting anything to disk.
 
 - **Optimized Memory Management**  
-Handles albums up to 1.7 GB effortlessly — lazy-loads ZIPs (first 64KB per track) and optimizes 7z solid blocks, maintaining available RAM during playback in an optimized way for any system.
+Handles albums up to 1.7 GB effortlessly — lazy-loads ZIP entries (first 64 KB per track) and never materializes a CD track, keeping RAM available during playback on any system.
 
 ## Supported formats
 
@@ -25,15 +28,27 @@ Handles albums up to 1.7 GB effortlessly — lazy-loads ZIPs (first 64KB per tra
 
 ![AOLIB deck screenshot](aolibdeck.png) ![AOLIB deck screenshot](aolibdeck1.png)
 
-## Albums in `.zip` and `.7z`
+## Albums in `.zip`
 
-The core opens the archive itself: it enumerates the entries, sorts them in natural order (9 Theme before 10 Theme), and plays them as an album. Shared library files (.psflib, .psf2lib, .ssflib) are resolved across entries in the same archive, but never show up as tracks. .7z support covers Store, LZMA and LZMA2; encrypted archives are not supported.
+The core opens the archive itself: it enumerates the entries, sorts them in natural order (9 Theme before 10 Theme), and plays them as an album. Shared library files (.psflib, .psf2lib, .ssflib) are resolved across entries in the same archive, but never show up as tracks.
 
 Two things worth knowing about how playback behaves:
 
-Track changes don't interrupt the audio. For .zip albums the next entry is decompressed ahead of time, a slice per frame, while the current track plays. By the time the track ends, the next one is already in memory.
-Track durations fill in as you listen. They're probed in the background instead of up front, so loading an album is immediate no matter how large it is. Until a track has been probed its length shows as --:--.
-.7z behaves differently on purpose: it extracts the whole album while loading, rather than lazily like .zip. 7-Zip compresses in solid blocks.
+**Track changes don't interrupt the audio.** The next entry is decompressed ahead of time, a slice per frame, while the current track plays. By the time the track ends, the next one is already in memory.
+
+**Track durations fill in as you listen.** They're probed in the background instead of up front, so loading an album is immediate no matter how large it is. Until a track has been probed its length shows as `--:--`.
+
+## PlayStation discs in `.chd`
+
+Point the core at a PS1 disc image and it plays the music on it. There is nothing to rip and nothing to extract: the CHD hunk map gives random access, so tracks are read as they play.
+
+A disc can carry its music two ways, and AOLIB lists both as one album:
+
+**CD-DA tracks** — Red Book audio, the whole track never held in RAM (a four-minute track is 42 MB, a disc easily 500 MB).
+
+**CD-XA audio** — the compressed audio interleaved into the data track, which on many discs is where all the music lives. AOLIB finds it through the CD-XA attributes in the ISO 9660 directory rather than by file extension, because these files are often named without one. Files that turn out to hold no audio are dropped from the list instead of sitting there as unplayable entries.
+
+Only audio that exists on the disc as a waveform is playable. Discs whose music is sequenced (SEQ + VAB driven by the console's sound chip) will show only their CD-DA and XA tracks, if any: playing the sequences would mean emulating the hardware, which is what a `.psf` rip already does.
 
 ## Controls
 
@@ -134,7 +149,7 @@ what's actually heard, not what the engine produced.
                              . . . . . . . . . . │ . . (GET_VFS_INTERFACE)
                              .                   ▼
 ┌────────────────────────────.───────────────────────────────────────────────────────────────────┐
-│ libretro.cpp – core entry point                                                                │
+│ src/ – the core, in layers (libretro.cpp keeps only the 25 retro_* entry points)               │
 │                                                                                                │
 │ ┌─ PROCESS STATE (survives every retro_load_game()) ─────────────────────────────────────────┐ │
 │ │                                                                                            │ │
@@ -147,13 +162,13 @@ what's actually heard, not what the engine produced.
 │ ┌─ PER-CONTENT STATE / I/O ──────────────────────────────────────────────────────────────────┐ │
 │ │                                                                                            │ │
 │ │  ┌─ CoreContext (rebuilt) ──────┐     ┌────────────────────┐     ┌──────────────────────┐  │ │
-│ │  │ CoreOptions · archive_is_7z  │     │     IVFSBridge     │     │  apply_ui_input()    │  │ │
+│ │  │ CoreOptions · archive_is_chd │     │     IVFSBridge     │     │  apply_ui_input()    │  │ │
 │ │  │ zip_entries · prefetch · job │     │ (LibretroVFS) I/O  │     │  pad/keyboard->deck  │  │ │
 │ │  │        │                     │     └─────────┬──────────┘     └──────────┬───────────┘  │ │
 │ │  │        ▼                     │               │                           │              │ │
 │ │  │ unique_ptr<IAudioEngine>     │               ▼                           ▼              │ │
 │ │  └──────────────────────────────┘     ┌────────────────────┐     ┌──────────────────────┐  │ │
-│ │                                       │ enumerate_zip/7z() │     │     ui::render()     │  │ │
+│ │                                       │ enumerate_zip/chd()│     │     ui::render()     │  │ │
 │ │                                       │  natural order     │     │  320x240 XRGB8888    │  │ │
 │ │                                       └─────────┬──────────┘     └──────────────────────┘  │ │
 │ └─────────────────────────────────────────────────┼──────────────────────────────────────────┘ │
@@ -176,7 +191,7 @@ what's actually heard, not what the engine produced.
 │ │  └────────────────┘                                                                        │ │
 │ │                                                                                            │ │
 │ │  ┌──── VgmstreamEngine (ISC, last in the chain) ────────────────────────────────────────┐  │ │
-│ │  │  49 extensions / 45 parsers: XA · VAG/SVAG/VPK/MIB · ADX/AHX · GC-DSP/BRSTM          │  │ │
+│ │  │  50 extensions / 46 parsers: XA · VAG/SVAG/VPK/MIB · ADX/AHX · GC-DSP/BRSTM          │  │ │
 │ │  │  AST · NDS STRM · RIFF/GENH · EA SCHl · CAF · FSB · GCub · MSS · ETC.                │  │ │
 │ │  │ ------------------------------------------------------------------------------------ │  │ │
 │ │  │  vgmstream_api (facade) --> vgmstream_vfs_adapter (STREAMFILE<->IVFSBridge)          │  │ │
@@ -218,9 +233,9 @@ what's actually heard, not what the engine produced.
  [Audio engines]       : Implement IAudioEngine (GME, LibVGM, libxmp, AOSDK, vgmstream)
  [I/O & bridges]       : Integration with the Libretro API
  [Archive readers]     : enumerate_zip() (minizip 1.3.1, Store/Deflate, Zip64) and
-                         enumerate_7z() (7-Zip SDK, Store/LZMA/LZMA2) both fill the
-                         same std::vector<ZipEntry> -- downstream code (duration probing,
-                         track switching) never distinguishes .zip from .7z.
+                         chd_playlist::enumerate() (CD-DA tracks and CD-XA audio)
+                         both fill the same std::vector<ZipEntry> -- downstream code
+                         (duration probing, track switching) never distinguishes them.
 ```
 ## Licensing
 
@@ -282,4 +297,7 @@ today. Within aosdk:
 
 **zlib & minizip** (.zip reading) — Jean-loup Gailly, Mark Adler, Gilles Vollant & Info-ZIP.
 
-**7-Zip SDK** (.7z reading) — Igor Pavlov (Public Domain).
+**libchdr** (.chd disc images) — Aaron Giles & contributors (BSD-3-Clause), with
+dr_flac by David Reid.
+
+**LZMA SDK** (CHD lzma/cdlz hunks) — Igor Pavlov (Public Domain).

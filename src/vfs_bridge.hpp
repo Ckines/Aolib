@@ -9,9 +9,9 @@
 // retro_vfs_seek() sólo confirma éxito (0) o fallo (-1) -- así lo
 // documenta libretro.h ("@return 0 on success, -1 on failure") -- y NO
 // devuelve la posición resultante. Cualquier adaptador que necesite la
-// posición absoluta (p.ej. sevenzip_vfs_adapter.hpp, que la usa para
-// calcular el tamaño del archivo con Seek(0, SEEK_END)) debe pedirla
-// aparte con stream_tell() tras cada seek exitoso.
+// posición absoluta -- por ejemplo para calcular el tamaño del fichero con
+// Seek(0, SEEK_END) -- debe pedirla aparte con stream_tell() tras cada seek
+// exitoso.
 
 #pragma once
 

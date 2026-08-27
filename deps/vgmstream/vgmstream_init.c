@@ -10,6 +10,7 @@ init_vgmstream_t init_vgmstream_functions[] = {
     init_vgmstream_svag_kcet,
     init_vgmstream_npsf,
     init_vgmstream_exst,
+    init_vgmstream_omu,
     init_vgmstream_rxws,
     init_vgmstream_ild,
     init_vgmstream_vpk,
@@ -55,6 +56,8 @@ init_vgmstream_t init_vgmstream_functions[] = {
     init_vgmstream_mcss,
     init_vgmstream_gcub,
     init_vgmstream_fsb,
+    init_vgmstream_mic_koei,
+    init_vgmstream_mul,
     /* ps_headerless SIEMPRE el último: no comprueba magia, adivina por
      * contenido, y delante de cualquier otro se los comería. */
     init_vgmstream_ps_headerless,

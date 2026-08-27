@@ -111,8 +111,67 @@ struct ZipEntry {
     // caché de bloques de zip_vfs_adapter, así que el escaneo es memoria y
     // no E/S, y el inflate de la entrada lo enmascara por completo.
     //
-    // 'dir_pos_valid' es false para las entradas de .7z, que no pasan por
-    // minizip; ese camino sigue usando el nombre.
+    // 'dir_pos_valid' es false para las entradas que no vienen de minizip
+    // (las de .chd); ese camino localiza el fichero por su extent.
+    // ─── entradas que vienen de un .chd ──────────────────────────────
+    // Un .chd trae musica por dos caminos y los dos acaban en esta misma
+    // lista; estos tres campos son lo unico que los distingue. Ver
+    // chd_playlist.hpp.
+    //
+    // cd_track >= 0: la entrada es una PISTA CD-DA, y el numero es su
+    // indice en la tabla de pistas del CHD. No tiene bytes en 'data' y no
+    // los tendra nunca: CdAudioEngine lee del CHD los sectores que
+    // necesita para cada render(). Una pista de cuatro minutos son 42 MB.
+    int      cd_track = -1;
+
+    // Sector donde empieza el fichero dentro de la imagen ISO9660. Es
+    // todo lo que hace falta para materializarlo: en ISO9660 un fichero
+    // es un extent CONTIGUO, asi que leerlo es un seek y ya.
+    uint32_t iso_lba = 0;
+
+    // >= 0: esta entrada se lee como SECTORES CRUDOS de 2352 de la pista de
+    // datos, que es lo que necesita vgmstream/xa.c para el audio XA (ver
+    // chd_vfs_bridge.hpp). El valor indexa CoreContext::chd_data_vfs.
+    // 'data' esta SIEMPRE vacio: el streaming es real, nunca se
+    // materializa (un solo fichero XA de PS1 pasa de 100 MB).
+    //
+    // Son dos casos, y los distingue xa_sectors:
+    //   xa_sectors > 0  un FICHERO de audio XA del sistema de ficheros; la
+    //                   ventana son sus sectores, de xa_first_sector en
+    //                   adelante.
+    //   xa_sectors == 0 la pista de datos ENTERA, que es el ultimo recurso
+    //                   cuando el directorio no declara ningun fichero XA.
+    int      cd_data_vfs = -1;
+
+    // Ventana de sectores crudos dentro de la pista de datos. Ojo: el
+    // tamano en sectores NO es size/2352 sino size/2048 -- ISO9660 cuenta
+    // en bloques logicos de 2048 aunque el sector sea Form 2, que lleva
+    // 2324 utiles.
+    uint32_t xa_first_sector = 0;
+    uint32_t xa_sectors      = 0;
+
+    // Distingue las entradas de .chd de las de .zip sin mirar el
+    // contenedor: materialize_entry() elige camino con esto.
+    bool     from_chd = false;
+
+    // true = esta entrada nunca va a ser una canción, y no por falta de
+    // tiempo: o ya se sondeó con el fichero ENTERO en RAM y ningún motor
+    // la abrió (los .STR de vídeo MDEC de un disco de PS1 son el caso
+    // real), o es un fichero de audio XA cuyo canal no tiene ni un sector
+    // de audio (los .STR de relleno de Die Hard Trilogy: E0..E9,
+    // EMPTY.STR), o es la pista de datos completa presentada como .xa
+    // (cd_data_vfs >= 0 && xa_sectors == 0) y sondearla en segundo plano
+    // significaría escanearla entera -- cientos de MB -- dentro de un
+    // frame de audio.
+    //
+    // rebuild_ui_model() (src/ui_glue.hpp) quita estas entradas de la
+    // lista VISIBLE por completo -- no solo del total, que se queda
+    // marcado con '+' para siempre en vez de mentir -- con una única
+    // excepción: la pista de datos completa se queda visible aunque
+    // también lleve esta marca, porque es la ÚNICA entrada que llega a la
+    // música de un disco cuyo directorio no declara ningún fichero XA.
+    bool     probe_failed = false;
+
     unz64_file_pos dir_pos{};
     bool dir_pos_valid = false;
 
@@ -237,6 +296,15 @@ inline bool zip_entry_is_lazy(const std::string& name) {
 // dependencia.
 inline bool zip_entry_is_playable(const std::string& name) {
     return zip_entry_extension_supported(name) && !zip_entry_is_dependency_only(name);
+}
+
+// La misma pregunta cuando se tiene la entrada entera. Una pista CD-DA de
+// un .chd es seleccionable por construccion: la puso ahi la tabla de
+// pistas del disco, no una extension. Su nombre ("Track 03.cda") no esta
+// -- ni debe estar -- en la lista de extensiones soportadas: un .cda
+// suelto dentro de un .zip no es nada que este core sepa abrir.
+inline bool zip_entry_is_playable(const ZipEntry& e) {
+    return e.cd_track >= 0 || zip_entry_is_playable(e.name);
 }
 
 // Comparación NATURAL de nombres, insensible a mayúsculas: los tramos de

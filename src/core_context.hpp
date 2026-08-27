@@ -15,6 +15,11 @@
 #include "engine/iaudio_engine.hpp"
 #include "vfs_bridge.hpp"
 #include "zip_playlist.hpp"
+#ifdef AOLIB_WITH_CHD
+#include "chd_playlist.hpp"
+#include "chd_reader.hpp"
+#include "chd_vfs_bridge.hpp"
+#endif
 
 // Frames por llamada a retro_run a 44100 Hz / 60 fps.
 constexpr std::size_t kFramesPerRun = 735;
@@ -63,7 +68,26 @@ public:
     // hay que cerrarlo a mano o se filtra el handle del VFS del frontend
     // en cada retro_unload_game(). zip_inflate_abort() es segura sobre un
     // trabajo inactivo, así que no hace falta comprobar nada aquí.
-    ~CoreContext() { zip_inflate_abort(prefetch); zip_inflate_abort(probe_job); }
+    //
+    // Y EL MOTOR SE DESTRUYE EL PRIMERO, a mano. Los miembros se destruyen
+    // en orden INVERSO al de declaracion, asi que 'engine' -- que es el
+    // primero -- seria el ULTIMO en irse, cuando el .chd y sus puentes de
+    // VFS ya no existen. Un motor de vgmstream sobre una pista de datos
+    // guarda el puntero al ChdDataTrackVfs y lo usa AL CERRAR, para
+    // stream_close(): con el bridge ya liberado eso es un uso despues de
+    // liberar, y peta al descargar el contenido. Lo mismo vale para
+    // CdAudioEngine, que guarda el puntero al ChdReader.
+    //
+    // Estuvo latente mientras la unica entrada que usaba un bridge era la
+    // pista de datos entera, que nunca llegaba a sonar (iba la ultima de
+    // la lista y sin sondear). Con los ficheros de audio XA enumerados uno
+    // a uno, la primera pista del disco ya es una de ellas y salta
+    // siempre.
+    ~CoreContext() {
+        engine.reset();
+        zip_inflate_abort(prefetch);
+        zip_inflate_abort(probe_job);
+    }
 
     CoreContext(const CoreContext&) = delete;
     CoreContext& operator=(const CoreContext&) = delete;
@@ -97,11 +121,37 @@ public:
     // al seleccionar la pista (ver zip_playlist.hpp).
     std::string archive_path;
 
-    // true = 'archive_path' es un .7z. Las entradas perezosas de los dos
-    // contenedores son indistinguibles aguas abajo, pero materializarlas NO:
-    // una va por minizip y la otra por el SDK de 7-Zip. Antes esto no hacía
-    // falta porque el camino de .7z no tenía entradas perezosas.
-    bool archive_is_7z = false;
+    // Lector del .chd cuando el contenido es uno. Vive lo que dura el
+    // contexto y MAS que cualquier motor: las pistas CD-DA no se
+    // materializan nunca, CdAudioEngine lee de aqui los sectores que
+    // necesita en cada render(). Ver chd_playlist.hpp.
+#ifdef AOLIB_WITH_CHD
+    chd_reader::ChdReader chd;
+
+    // Lectura anticipada de la entrada siguiente, repartida por frames.
+    // Ver chd_playlist::PrefetchJob.
+    chd_playlist::PrefetchJob chd_prefetch;
+
+    // Medidor de la duracion de una pista de audio XA, troceado por
+    // frames. Ver chd_playlist::XaProbeJob.
+    chd_playlist::XaProbeJob chd_xa_probe;
+
+    // Un ChdDataTrackVfs por pista de datos con posible XA (tipicamente
+    // una sola, la pista 1). Indexado por indice de pista, como
+    // ZipEntry::cd_data_vfs; nullptr en los indices que no aplican. Vive
+    // aqui y no dentro del bucle que lo usa porque el streamfile de
+    // vgmstream conserva el puntero al vfs durante TODA la vida del motor,
+    // incluidos los reaperturas de select_track() al cambiar de subsong.
+    std::vector<std::unique_ptr<chd_vfs_bridge::ChdDataTrackVfs>> chd_data_vfs;
+#endif
+
+    // true = 'archive_path' es un .chd. El otro contenedor, al lado del
+    // .zip; a partir de la enumeracion las entradas son iguales.
+#ifdef AOLIB_WITH_CHD
+    bool archive_is_chd = false;
+#else
+    static constexpr bool archive_is_chd = false;
+#endif
 
     // Inflado por adelantado de la entrada SIGUIENTE, repartido entre
     // frames (ver libretro.cpp::advance_zip_prefetch()).
@@ -135,6 +185,15 @@ public:
     // original porque cae con el audio ya sonando.
     ZipInflateJob probe_job;
     std::size_t   probe_job_index = kNoPrefetch;
+
+#ifdef AOLIB_WITH_CHD
+    // El mismo sondeo NeedsFull, pero para una entrada que vino de un
+    // .chd: ZipInflateJob es minizip y no sabe leer un .chd, asi que
+    // necesita su propio trabajo reanudable en vez de reutilizar
+    // probe_job. Nunca estan los dos activos a la vez: el sondeo es
+    // secuencial, una entrada detras de otra.
+    chd_playlist::PrefetchJob chd_probe_job;
+#endif
 
     // Se pone a true la única vez que se decide "no queda nada más que
     // reproducir" (última pista, última entrada del zip y sin

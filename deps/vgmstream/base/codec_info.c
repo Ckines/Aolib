@@ -1,21 +1,31 @@
 #include "codec_info.h"
 
-//TODO: move to root folder?
+/* AOLIB: podado respecto a upstream.
+ *
+ * Este switch nombra cada decodificador por SIMBOLO, y el Makefile pasa los
+ * .o sueltos al enlace (no como biblioteca), asi que una rama basta para
+ * arrastrar el objeto entero a la .dll aunque ningun parser vendorizado
+ * pueda producir nunca ese coding_type. Y en Windows no se puede confiar en
+ * --gc-sections para limpiarlo: alli el Makefile desactiva -fdata-sections
+ * a proposito (ver su comentario sobre el agujero de .bss en MinGW), de modo
+ * que las tablas .rdata del objeto entran enteras. El caso extremo era
+ * coding_AAC_raw: 188 KB de objeto anclados por tres lineas, sin un solo
+ * meta capaz de pedirlo.
+ *
+ * Se han quitado las ramas cuyo coding_type no aparece en ningun meta/ ni
+ * layout/ de los que quedan: CRI_HCA, KA1A, UBI_MPEG, TAC, COMPRESSWAVE,
+ * IMUSE, MIO, BINKA, RELIC y AAC_raw.
+ *
+ * Los bloques bajo #ifdef (VORBIS, SPEEX, FFMPEG, ATRAC9, CELT, MPEG) se
+ * dejan como estan: esas macros no se definen, asi que ya no compilan nada,
+ * y conservarlos mantiene el fichero reconocible frente a upstream.
+ *
+ * Para volver a anadir un formato hay que reponer su meta Y su rama aqui.
+ * tests/vgmstream_closure.py comprueba que meta/ y coding/ siguen cuadrando.
+ */
 
 const codec_info_t* codec_get_info(VGMSTREAM* v) {
     switch(v->coding_type) {
-        case coding_CRI_HCA:
-            extern const codec_info_t hca_decoder;
-            return &hca_decoder;
-
-        case coding_KA1A:
-            extern const codec_info_t ka1a_decoder;
-            return &ka1a_decoder;
-
-        case coding_UBI_MPEG:
-            extern const codec_info_t ubimpeg_decoder;
-            return &ubimpeg_decoder;
-
 #ifdef VGM_USE_VORBIS
         case coding_OGG_VORBIS:
             extern const codec_info_t ogg_vorbis_decoder;
@@ -26,31 +36,11 @@ const codec_info_t* codec_get_info(VGMSTREAM* v) {
             return &vorbis_custom_decoder;
 #endif
 
-        case coding_TAC:
-            extern const codec_info_t tac_decoder;
-            return &tac_decoder;
-
-        case coding_COMPRESSWAVE:
-            extern const codec_info_t compresswave_decoder;
-            return &compresswave_decoder;
-
 #ifdef VGM_USE_SPEEX
         case coding_SPEEX:
             extern const codec_info_t speex_decoder;
             return &speex_decoder;
 #endif
-
-        case coding_IMUSE:
-            extern const codec_info_t imuse_decoder;
-            return &imuse_decoder;
-
-        case coding_MIO:
-            extern const codec_info_t mio_decoder;
-            return &mio_decoder;
-
-        case coding_BINKA:
-            extern const codec_info_t binka_decoder;
-            return &binka_decoder;
 
         case coding_PCM32LE:
             extern const codec_info_t pcm32_decoder;
@@ -91,10 +81,6 @@ const codec_info_t* codec_get_info(VGMSTREAM* v) {
             return &mpeg_decoder;
 #endif
 
-        case coding_RELIC:
-            extern const codec_info_t relic_decoder;
-            return &relic_decoder;
-
         case coding_CF_DF_ADPCM_V40:
             extern const codec_info_t cf_df_v40_decoder;
             return &cf_df_v40_decoder;
@@ -106,10 +92,6 @@ const codec_info_t* codec_get_info(VGMSTREAM* v) {
         case coding_CF_DF_ADPCM_v5:
             extern const codec_info_t cf_df_v5_v40_decoder;
             return &cf_df_v5_v40_decoder;
-
-        case coding_AAC_raw:
-            extern const codec_info_t aac_decoder;
-            return &aac_decoder;
 
         default:
             return NULL;

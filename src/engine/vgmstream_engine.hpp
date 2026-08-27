@@ -74,6 +74,10 @@ public:
     // ANTES de open().
     void set_partial(std::size_t full_size) noexcept { full_size_ = full_size; }
 
+    // Audio XA leido de la pista de datos de un .chd: abrir sin enumerar
+    // los subsongs. Ver OpenConfig::xa_fast_open.
+    void set_xa_fast_open(bool on) noexcept { xa_fast_open_ = on; }
+
     // True si al abrir hizo falta leer más allá del prefijo: la cabecera no
     // bastaba y hay que materializar la entrada entera y reintentar.
     bool needs_full_data() const noexcept { return truncated_; }
@@ -89,7 +93,7 @@ public:
         name_ = basename_of(!display_name_.empty() ? display_name_ : path_);
 
         if (data && size > 0) {
-            // Entrada de .zip/.7z: ya descomprimida por el llamante. NO se
+            // Entrada de .zip/.chd: ya descomprimida por el llamante. NO se
             // copia; ver la nota 3 de la cabecera.
             mem_      = data;
             mem_size_ = size;
@@ -149,6 +153,7 @@ public:
         cfg.fade_time   = static_cast<double>(fade_seconds_);
         cfg.downmix_to  = 2;
         cfg.output_rate = kSampleRate;
+        cfg.xa_fast_open = xa_fast_open_ && index == 0;
 
         // subsong es 1-based en vgmstream; 0 significa "el primero".
         aolib::vgms::Handle h = aolib::vgms::open(sf, static_cast<int>(index) + 1, cfg);
@@ -305,6 +310,11 @@ private:
 
     aolib::vgms::Handle handle_ = nullptr;
     libstreamfile_t*    sf_     = nullptr;
+
+    // Solo lo pone el reparto para una entrada que se lee del puente de
+    // una pista de datos de .chd: es ahi donde enumerar cuesta descomprimir
+    // el fichero entero. Un .xa suelto o de un .zip sigue enumerando.
+    bool     xa_fast_open_  = false;
 
     int      subsongs_      = 1;
     int      channels_      = 2;   // 1 obliga a expandir en render()

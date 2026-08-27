@@ -70,8 +70,18 @@ inline const char* const* list(std::size_t& count) {
         ".genh", ".aifc", ".aud",
         ".cfn", ".ydsp", ".rstm", ".rsm", ".sng", ".asf", ".adp",
         ".ss2", ".ads",
+        // Outrage OMU: PCM16LE entrelazado en bloques de 0x200. Alter Echo
+        // (PS2) son 70 de las 72 entradas de su rip.
+        ".omu",
         // Traídos de upstream en la ronda del 24/08 (ver LEEME.txt)
         ".fsb", ".gcub", ".mss", ".wam", ".wac",
+        // Koei (Dynasty Warriors 5, Samurai Warriors: Xtreme Legends) y
+        // Crystal Dynamics (Tomb Raider Anniversary/Legend/Underworld).
+        // ".emff" es un alias que mul.c reconoce igual que el nombre real
+        // del formato (mul, sin punto para no colar en la lista de abajo)
+        // -- lo usan los rips de Tomb Raider en vez de ese nombre, que no
+        // aparece en ningún archivo de la biblioteca. Añadidas el 26/08.
+        ".mic", ".emff",
     };
     count = sizeof(kExts) / sizeof(kExts[0]);
     return kExts;

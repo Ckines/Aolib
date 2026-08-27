@@ -88,7 +88,7 @@ stripped.
 Only these four formats. Adding STM, MTM, MED or any other tracker
 format requires full libxmp, not just listing the extension.
 
-## Via vgmstream — streamed audio, 49 extensions / 45 parsers
+## Via vgmstream — streamed audio
 
 Not emulated chips: these are pre-recorded streams read off the disc, so
 what plays is the actual mastered audio rather than a chip simulation.
@@ -121,6 +121,10 @@ rate is shown in the track comment.
 | **VS/STR** | PS-ADPCM | Squaresoft |
 | **MTAF** | MTAF | Konami |
 | **MIB / MI4** | PS-ADPCM | .mih provides exact params; else inferred from data. |
+| **OMU** | PCM16LE | Outrage, 48 kHz, 0x200 interleave (Alter Echo) |
+| **MSS** | GC DSP (dual) | Free Radical Design |
+| **MUL / EMFF** | PS-ADPCM | Crystal Dynamics (Tomb Raider). Ripped as `.emff` |
+| **MIC** | PS-ADPCM | Koei (Dynasty Warriors, Samurai Warriors) |
 
 ### Sega — Saturn, Dreamcast, Naomi arcade
 
@@ -144,6 +148,10 @@ rate is shown in the track comment.
 | **Cstr** | GC DSP ADPCM | Star Fox Assault, Donkey Konga (Namco NuSound) |
 | **RS03** | GC DSP ADPCM | Metroid Prime 2 |
 | **NDS STRM** | IMA / PCM | Nintendo DS streaming standard |
+| **CAF** | GC DSP ADPCM | tri-Crescendo (Baten Kaitos), `.cfn` |
+| **Yuke's DSP** | GC DSP ADPCM | `.ydsp` |
+| **GameCube DTK** | GC DTK ADPCM | `.adp`, raw disc audio |
+| **GCub** | GC DSP ADPCM | Sega |
 
 ### Cross-platform classics and generic containers
 
@@ -153,6 +161,24 @@ rate is shown in the track comment.
 | **WS AUD** | Westwood ADPCM | Command & Conquer and its console ports |
 | **RIFF** | PCM / IMA / MSADPCM | Broad by itself: around 50 extensions across PS2/Xbox/GC |
 | **GENH** | many | Generic header for raw PCM/ADPCM; the safety net for headerless rips |
+| **EA SCHl** | EA ADPCM / PCM | `.sng .asf`, PS2/GameCube era |
+| **RSTM (Rockstar)** | PS-ADPCM / GC DSP | `.rstm .rsm` |
+| **FSB** | FADPCM / PCM | FMOD Sound Bank (FSB3) |
+| **Ubisoft Jade** | RIFF variants | `.wam .wac` |
+
+### PlayStation discs (`.chd`)
+
+A CHD disc image is opened directly; there is nothing to extract first.
+Both of a disc's music sources end up in the same track list:
+
+| Source | Codec | Notes |
+|---|---|---|
+| **CD-DA tracks** | PCM16 (Red Book) | Never held in RAM: a four-minute track is 42 MB |
+| **CD-XA audio** | CD-XA ADPCM | Found through the CD-XA attributes of the ISO 9660 directory record, not by extension -- on many discs these files have none |
+
+Only audio that exists on the disc as a waveform plays. Sequenced music
+(SEQ + VAB driven by the console's sound chip) is out of scope: playing it
+means emulating the hardware, which is what a `.psf` rip already does.
 
 ### A note on guessed formats
 
@@ -187,19 +213,3 @@ through it. It is held back because `open_streamfile_by_absname()`
 (`util/sf_utils.c`) will open arbitrary absolute paths named by that text
 file, which is content-directed I/O and deserves its own sandbox rather
 than being slipped in.
-
-## vgmstream — added 1.2.0
-
-| Extension | Format | 
-|-----------|--------|
-| `.cfn` | CAF |
-| `.sng` | EA SCHl | multi-platform (EA) |
-| `.rstm`, `.rsm` | RSTM (Rockstar) |
-| `.ydsp` | Yuke's DSP |
-| `.adp` | GameCube DTK |
-| `.fsb` | FMOD Sound Bank (FSB3) |
-| `.gcub` | GCub | Sega | 
-| `.mss` | Double DSP, `.mss` layout | Free Radical Design | 
-| `.wam`, `.wac` | Ubisoft Jade RIFF |
-
-Verified against 543 files across five complete rips.

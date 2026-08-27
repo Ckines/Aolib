@@ -189,7 +189,10 @@ inline constexpr int kPlayTrackX    = 272; // "TRACK"
 inline constexpr int kPlayTrackY    = 169;
 inline constexpr int kPlayNumX      = 273; // "03"
 inline constexpr int kPlayNumY      = 177;
-inline constexpr int kPlayTotalNumsX = 284; // " / 51"
+// El "/ total" se ancla por la DERECHA, en el mismo pixel donde acaba la
+// barra de progreso. Con una X fija, un album de 3 cifras (180 pistas) lo
+// empujaba hasta el 319 y se salia del panel, que acaba en el 315.
+inline constexpr int kPlayNumsRightX = 312; // = kPlayBarX + kPlayBarW - 1
 inline constexpr int kPlayBarX      = 151; // barra de progreso
 inline constexpr int kPlayBarY      = 188;
 inline constexpr int kPlayBarW      = 162;
@@ -516,10 +519,15 @@ inline void draw_track_list(Renderer& r, const UiModel& model) {
                                             : ellipsize(raw_label, avail);
         r.draw_text(name_x, row_y, c, shown.c_str());
 
-        const uint64_t len = model.tracks[static_cast<std::size_t>(i)].length_frames;
+        const auto& item = model.tracks[static_cast<std::size_t>(i)];
+        const uint64_t len = item.length_frames;
         char tbuf[16];
         if (len == 0) std::snprintf(tbuf, sizeof(tbuf), "--:--");
         else {
+            // No se distingue la duracion medida por muestreo (audio XA de
+            // un .chd) de la contada de verdad: el error medido contra
+            // vgmstream es <=1,5 % en 100 de 101 ficheros de prueba,
+            // indistinguible en la practica.
             const int s = static_cast<int>(len / 44100);
             std::snprintf(tbuf, sizeof(tbuf), "%02d:%02d", s / 60, s % 60);
         }
@@ -539,11 +547,19 @@ inline void draw_info_panel(Renderer& r, const UiModel& model) {
 
     // Duración total del álbum: suma de lo conocido. Si alguna pista no
     // reporta duración, se marca con '+' en vez de mentir con un total
-    // exacto que no lo es.
+    // exacto que no lo es. Una entrada que nunca va a resolverse (ver
+    // ZipEntry::probe_failed) ni siquiera llega a model.tracks -- se filtra
+    // en rebuild_ui_model() -- así que aquí no hace falta distinguirla: la
+    // única excepción (el último recurso de una pista de datos de .chd) SÍ
+    // debe quedarse marcando '+' para siempre, que es justo lo que pasa al
+    // no excluirla.
     uint64_t total_frames = 0;
     bool any_unknown = false;
     for (const auto& t : model.tracks) {
         if (t.length_frames == 0) any_unknown = true;
+        // Las estimadas (audio XA de un .chd) suman igual que las
+        // contadas: el error medido es <=1,5 %, así que no se
+        // distinguen en el total.
         else total_frames += t.length_frames;
     }
 
@@ -664,9 +680,21 @@ inline void draw_playing(Renderer& r, const UiModel& model) {
 
     r.draw_text(layout::kPlayTrackX, layout::kPlayTrackY, kColCounter, "TRACK");
     std::snprintf(line, sizeof(line), "%02d", model.current_track + 1);
-    r.draw_text(layout::kPlayNumX, layout::kPlayNumY, kColCounterBig, line);
-    std::snprintf(line, sizeof(line), " / %zu", model.tracks.size());
-    r.draw_text(layout::kPlayTotalNumsX, layout::kPlayNumY, kColCounter, line);
+    const int num_end = r.draw_text(layout::kPlayNumX, layout::kPlayNumY,
+                                    kColCounterBig, line);
+
+    // El numero grande se queda anclado bajo "TRACK"; el total se pega al
+    // borde derecho. Con dos cifras eso cae en el mismo pixel de siempre.
+    // Si no cabe el espacio tras la barra, se quita ese espacio antes que
+    // empujar el total fuera del panel: "102/180", nunca "102/  180".
+    char total[16];
+    std::snprintf(total, sizeof(total), "/ %zu", model.tracks.size());
+    int tx = layout::kPlayNumsRightX - text_width(total) + 1;
+    if (tx < num_end) {
+        std::snprintf(total, sizeof(total), "/%zu", model.tracks.size());
+        tx = layout::kPlayNumsRightX - text_width(total) + 1;
+    }
+    r.draw_text(tx < num_end ? num_end : tx, layout::kPlayNumY, kColCounter, total);
 
     // ── Barra de progreso ──
     r.draw_rect(layout::kPlayBarX, layout::kPlayBarY, layout::kPlayBarW, layout::kPlayBarH,

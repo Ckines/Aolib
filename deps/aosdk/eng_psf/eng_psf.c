@@ -130,6 +130,25 @@ int psf_lib(int libnum, uint8 *lib, uint64 size, corlett_t *c)
 		corlett_t *tags;
 	} cache[10] = {{0}};
 
+	/* PARCHE LOCAL (ver deps/patches/README.md): guard de NULL y de
+	   tamaño.
+
+	   corlett_decode_lib() llama a este callback con lib == NULL cuando el
+	   corlett declara program_size == 0, y el strncmp() de abajo lo
+	   desreferencia sin mirar: cualquier .psf truncado o corrupto MATA el
+	   proceso -- con un core Libretro eso es RetroArch entero, no una
+	   pista que no suena. psf_lib_patch(), veinte líneas más arriba, ya
+	   tiene exactamente este guard; aquí faltaba.
+
+	   El mínimo son 2048 bytes, la cabecera de un PS-X EXE: psf_lib_patch()
+	   lee lib[0x18..0x1f] y calcula `size-2048`, que con size < 2048 da la
+	   vuelta en aritmética sin signo y deja un plength enorme para el
+	   memcpy. */
+	if (lib == NULL || size < 2048)
+	{
+		return AO_FAIL;
+	}
+
 	if (strncmp((char *)lib, "PS-X EXE", 8))
 	{
 		printf("Major error!  Library %d was not OK!\n", libnum);

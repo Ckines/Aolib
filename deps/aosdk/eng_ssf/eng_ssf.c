@@ -80,8 +80,28 @@ static corlett_t	c = {0};
 
 int ssf_lib(int libnum, uint8 *lib, uint64 size, corlett_t *c)
 {
+	uint32 offset;
+
+	/* PARCHE LOCAL (ver deps/patches/README.md): mismo caso que psf_lib.
+	   corlett_decode_lib() entrega lib == NULL cuando program_size vale 0,
+	   y las cuatro lecturas de abajo lo desreferencian. Con size < 4,
+	   además, `size-4` da la vuelta y el memcpy copia 16 exabytes. */
+	if (lib == NULL || size < 4)
+	{
+		return AO_FAIL;
+	}
+
 	// patch the file into ram
-	uint32 offset = lib[0] | lib[1]<<8 | lib[2]<<16 | lib[3]<<24;
+	offset = lib[0] | lib[1]<<8 | lib[2]<<16 | lib[3]<<24;
+
+	/* PARCHE LOCAL: el guard original resta y no comprueba. Con un offset
+	   >= 0x80000 (lo dice el fichero, nadie lo valida) `0x80000-offset+4`
+	   da la vuelta y sale un size gigantesco, y &sat_ram[offset] ya
+	   apuntaba fuera de la RAM de Saturn de todas formas. */
+	if (offset >= 0x80000)
+	{
+		return AO_FAIL;
+	}
 
 	// guard against invalid data
 	if ((offset + (size-4)) > 0x7ffff)
