@@ -63,6 +63,21 @@ const char** corlett_tag_get(corlett_t *c, const char *tag);
 const char* corlett_tag_lookup(corlett_t *c, const char *tag);
 
 int corlett_tag_recognize(corlett_t *c, const char **target_value, int tag_num, const char *key);
+
+// PARCHE LOCAL (ver deps/patches/README.md): declaración de los tres
+// contadores de fade. corlett.c los define SIN 'static', o sea que son
+// estado global de proceso compartido por PSF1, PSF2 y SSF, pero no los
+// declaraba ningún cabecero: fuera de corlett.c solo se veían a través de
+// corlett_sample_count()/corlett_sample_total(), que leen pero no
+// escriben. El host los necesita para poder GUARDARLOS y RESTAURARLOS
+// alrededor de un motor temporal (src/engine/aosdk_bridge.hpp,
+// AosdkFadeScope). Se declaran aquí y no en el host a propósito: corlett.c
+// incluye este fichero, así que un cambio de tipo aguas arriba lo caza el
+// compilador en vez de convertirse en corrupción silenciosa.
+extern uint32 total_samples;
+extern uint32 decaybegin;
+extern uint32 decayend;
+
 void corlett_length_set(double length_seconds, double fade_seconds);
 uint32 corlett_sample_count(void);
 uint32 corlett_sample_total(void);
