@@ -42,6 +42,8 @@ Two things worth knowing about how playback behaves:
 
 Point the core at a PS1 disc image and it plays the music on it. There is nothing to rip and nothing to extract: the CHD hunk map gives random access, so tracks are read as they play.
 
+`.chd` isn't limited to real PlayStation discs. AOLIB reads whatever an ISO 9660 filesystem lists inside the CHD, so a `.chd` built from an ordinary folder of AOLIB-supported files -- `.spc`, `.vgm`, `.psf`, streamed formats, anything the core already opens from a `.zip` -- works the same way as a `.zip` album. CHD's compression and hunk-based random access make it a usable container for a regular library, not just for disc rips.
+
 A disc can carry its music two ways, and AOLIB lists both as one album:
 
 **CD-DA tracks** — Red Book audio, the whole track never held in RAM (a four-minute track is 42 MB, a disc easily 500 MB).
