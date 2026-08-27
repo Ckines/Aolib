@@ -41,12 +41,6 @@ extern "C" {
 
 namespace aolib {
 
-#ifndef AOLIB_WITH_PSF
-// Sin los motores de aosdk enlazados no hay estado de corlett que
-// preservar, pero los sondeos de duración se compilan igual: el alias
-// inerte evita salpicar de #ifdef el cuerpo de esas funciones.
-struct AosdkFadeScope {};
-#endif
 #ifdef AOLIB_WITH_PSF
 // Busca un "_lib"/"_libN" entre las entradas hermanas del mismo .zip, por
 // basename e insensible a mayúsculas: esos tags casi siempre son nombres
