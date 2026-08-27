@@ -7,11 +7,12 @@ Extensive format compatibility: Over 50 supported formats, from classic chip-bas
 - **Zero-Friction Album Playback**  
 Drop a `.zip` containing an entire soundtrack, and AOLIB plays it in order immediately. No external cue sheets or playlist files are ever required.
 
-- **PlayStation Discs, Straight from the `.chd`**  
-Open a PS1 disc image and AOLIB finds its music: Red Book CD-DA tracks and the CD-XA audio buried in the data track, without extracting anything to disk.
-
 - **Optimized Memory Management**  
 Handles albums up to 1.7 GB effortlessly — lazy-loads ZIP entries (first 64 KB per track) and never materializes a CD track, keeping RAM available during playback on any system.
+
+- **CHD support and CD playback**  
+Open a PS1 disc image and AOLIB finds its music: Red Book CD-DA tracks and the CD-XA audio buried in the data track, without extracting anything to disk.
+AOLIB also supports CHD files as audio containers just like .zip files. Take advantage of its compression and block access to efficiently play any compatible format (.spc, .vgm, .psf or streaming audio, etc).
 
 ## Supported formats
 
@@ -38,7 +39,7 @@ Two things worth knowing about how playback behaves:
 
 **Track durations fill in as you listen.** They're probed in the background instead of up front, so loading an album is immediate no matter how large it is. Until a track has been probed its length shows as `--:--`.
 
-## PlayStation discs in `.chd`
+## Support `CHD`
 
 Point the core at a PS1 disc image and it plays the music on it. There is nothing to rip and nothing to extract: the CHD hunk map gives random access, so tracks are read as they play.
 
@@ -49,8 +50,6 @@ A disc can carry its music two ways, and AOLIB lists both as one album:
 **CD-DA tracks** — Red Book audio, the whole track never held in RAM (a four-minute track is 42 MB, a disc easily 500 MB).
 
 **CD-XA audio** — the compressed audio interleaved into the data track, which on many discs is where all the music lives. AOLIB finds it through the CD-XA attributes in the ISO 9660 directory rather than by file extension, because these files are often named without one. Files that turn out to hold no audio are dropped from the list instead of sitting there as unplayable entries.
-
-Only audio that exists on the disc as a waveform is playable. Discs whose music is sequenced (SEQ + VAB driven by the console's sound chip) will show only their CD-DA and XA tracks, if any: playing the sequences would mean emulating the hardware, which is what a `.psf` rip already does.
 
 ## Controls
 
@@ -134,111 +133,11 @@ live for the whole RetroArch session. All file I/O goes through
 share a single process-wide state guard, because the vendored R3000A and
 M68000 cores don't support two live instances at once. The audio pipeline
 applies reverb BEFORE the gain stage — so the tail rises with the overall
-volume — and analyzes the signal AFTER, because the VU meter has to show
-what's actually heard, not what the engine produced.
+volume — and analyzes the signal AFTER. 
+You can see the complete System Architecture Diagram and pipiline at.
+[architecture.ascii.txt](architecture.ascii.txt).
 
-```
-===================================================================================================
-                                    AOLIB - core architecture
-                     retro_run() per frame: input ──> state ──> audio ──> video
-===================================================================================================
 
-                                     ┌────────────────────────┐
-                                     │  RetroArch (frontend)  │
-                                     │ VFS · input · callbacks│
-                                     └───────────┬────────────┘
-                                                 │
-                             . . . . . . . . . . │ . . (GET_VFS_INTERFACE)
-                             .                   ▼
-┌────────────────────────────.───────────────────────────────────────────────────────────────────┐
-│ src/ – the core, in layers (libretro.cpp keeps only the 25 retro_* entry points)               │
-│                                                                                                │
-│ ┌─ PROCESS STATE (survives every retro_load_game()) ─────────────────────────────────────────┐ │
-│ │                                                                                            │ │
-│ │  ┌──────────────────────┐     ┌────────────────────────┐     ┌──────────────────────────┐  │ │
-│ │  │       UiModel        │     │     AudioAnalyzer      │     │        dsp::Reverb       │  │ │
-│ │  │ focus · volume · rpt │     │  VU + spectrum (FFT)   │     │host layer, struct. bypass│  │ │
-│ │  └──────────────────────┘     └────────────────────────┘     └──────────────────────────┘  │ │
-│ └────────────────────────────────────────────────────────────────────────────────────────────┘ │
-│                                                                                                │
-│ ┌─ PER-CONTENT STATE / I/O ──────────────────────────────────────────────────────────────────┐ │
-│ │                                                                                            │ │
-│ │  ┌─ CoreContext (rebuilt) ──────┐     ┌────────────────────┐     ┌──────────────────────┐  │ │
-│ │  │ CoreOptions · archive_is_chd │     │     IVFSBridge     │     │  apply_ui_input()    │  │ │
-│ │  │ zip_entries · prefetch · job │     │ (LibretroVFS) I/O  │     │  pad/keyboard->deck  │  │ │
-│ │  │        │                     │     └─────────┬──────────┘     └──────────┬───────────┘  │ │
-│ │  │        ▼                     │               │                           │              │ │
-│ │  │ unique_ptr<IAudioEngine>     │               ▼                           ▼              │ │
-│ │  └──────────────────────────────┘     ┌────────────────────┐     ┌──────────────────────┐  │ │
-│ │                                       │ enumerate_zip/chd()│     │     ui::render()     │  │ │
-│ │                                       │  natural order     │     │  320x240 XRGB8888    │  │ │
-│ │                                       └─────────┬──────────┘     └──────────────────────┘  │ │
-│ └─────────────────────────────────────────────────┼──────────────────────────────────────────┘ │
-│                                                   │ construct_engine_for()                     │
-│                                                   │ (vgmstream tried LAST: it claims generic   │
-│                                                   │ extensions like .str that other engines    │
-│                                                   │ should get first -- order is enforced by   │
-│                                                   │ checkup.sh                                 │
-│                                                   ▼                                            │
-│ ┌─ AUDIO ENGINES (IAudioEngine) ─────────────────────────────────────────────────────────────┐ │
-│ │                                                                                            │ │
-│ │  ┌────────────────┐  ┌────────────────┐  ┌─── aosdk (process-wide guard) ────────────────┐ │ │
-│ │  │   GmeEngine    │  │  LibvgmEngine  │  │ ┌──────────────┐ ┌──────────────┐ ┌─────────┐ │ │ │
-│ │  │ SPC · NSF · GBS│  │ VGM · VGZ      │  │ │  PsfEngine   │ │  SsfEngine   │ │ Core    │ │ │ │
-│ │  │ HES · KSS...   │  │ (30+ chips)    │  │ │ PSF1 / PSF2  │ │ SSF / Saturn │ │ Guard   │ │ │ │
-│ │  └────────────────┘  └────────────────┘  │ └──────────────┘ └──────────────┘ └─────────┘ │ │ │
-│ │  ┌────────────────┐                      │  acquire() -> bool: a busy guard FAILS        │ │ │
-│ │  │  libxmp-lite   │                      │  THE TRACK LOAD, not the process.             │ │ │
-│ │  │ .MOD.S3M.XM.IT │                      └───────────────────────────────────────────────┘ │ │
-│ │  └────────────────┘                                                                        │ │
-│ │                                                                                            │ │
-│ │  ┌──── VgmstreamEngine (ISC, last in the chain) ────────────────────────────────────────┐  │ │
-│ │  │  50 extensions / 46 parsers: XA · VAG/SVAG/VPK/MIB · ADX/AHX · GC-DSP/BRSTM          │  │ │
-│ │  │  AST · NDS STRM · RIFF/GENH · EA SCHl · CAF · FSB · GCub · MSS · ETC.                │  │ │
-│ │  │ ------------------------------------------------------------------------------------ │  │ │
-│ │  │  vgmstream_api (facade) --> vgmstream_vfs_adapter (STREAMFILE<->IVFSBridge)          │  │ │
-│ │  │  resample -> 44100 inside vgmstream; native rate in TrackMetadata                    │  │ │
-│ │  └──────────────────────────────────────────────────────────────────────────────────────┘  │ │
-│ └─────────────────────────────────────────────────┬──────────────────────────────────────────┘ │
-│                                                   │ render()                                   │
-│                                                   ▼                                            │
-│ ┌─ EXECUTION PIPELINES (retro_run's real order) ─────────────────────────────────────────────┐ │
-│ │                                                                                            │ │
-│ │  [ AUDIO PIPELINE ]                                                                        │ │
-│ │  ┌──────────┐      ┌──────────┐      ┌───────────┐      ┌──────────┐                       │ │
-│ │  │  engine  │ ───> │  Reverb  │ ───> │ host gain │ ───> │ Analyzer │ ───> audio_batch_cb   │ │
-│ │  │ ->render │      │(amount>0)│      │  volume   │      │  feed()  │                       │ │
-│ │  └──────────┘      └──────────┘      └───────────┘      └──────────┘                       │ │
-│ │   * Reverb BEFORE gain; Analyzer AFTER (VU shows what is actually heard)                   │ │
-│ │                                                                                            │ │
-│ │  [ BACKGROUND WORK -- after the audio is handed over, on purpose ]                         │ │
-│ │  ┌──────────────────────────┐   ┌──────────────────────────┐                               │ │
-│ │  │ advance_zip_prefetch()   │   │ advance_duration_probe() │                               │ │
-│ │  │ inflates the NEXT entry, │   │ fills the track lengths  │                               │ │
-│ │  │ ~4 ms/frame budget       │   │ the list shows, 2 ms/fr. │                               │ │
-│ │  └──────────────────────────┘   └──────────────────────────┘                               │ │
-│ │   The frontend paces the core by blocking inside audio_batch_cb(), so                      │ │
-│ │   work placed after it uses slack that would otherwise go to vsync.                        │ │
-│ │   Prefetch has priority: only ONE extra entry is ever in flight.                           │ │
-│ │                                                                                            │ │
-│ │  [ VIDEO PIPELINE ]                                                                        │ │
-│ │  ┌──────────────┐      ┌──────────────┐      ┌──────────────┐                              │ │
-│ │  │  pad input   │ ───> │   UiModel    │ ───> │ ui::render() │ ───> video_refresh_cb        │ │
-│ │  │ apply_input  │      │focus/deck st.│      │ (idempotent) │                              │ │
-│ │  └──────────────┘      └──────────────┘      └──────────────┘                              │ │
-│ └────────────────────────────────────────────────────────────────────────────────────────────┘ │
-└────────────────────────────────────────────────────────────────────────────────────────────────┘
-
- Module legend:
- [Process state]       : Persists across games (UiModel, AudioAnalyzer, dsp::Reverb)
- [Per-content state]   : Destroyed and rebuilt per ROM (CoreContext, IVFSBridge, Zip, Render)
- [Audio engines]       : Implement IAudioEngine (GME, LibVGM, libxmp, AOSDK, vgmstream)
- [I/O & bridges]       : Integration with the Libretro API
- [Archive readers]     : enumerate_zip() (minizip 1.3.1, Store/Deflate, Zip64) and
-                         chd_playlist::enumerate() (CD-DA tracks and CD-XA audio)
-                         both fill the same std::vector<ZipEntry> -- downstream code
-                         (duration probing, track switching) never distinguishes them.
-```
 ## Licensing
 
 The project's own code belongs to Ckines, under GPL-2.0-or-later. The
