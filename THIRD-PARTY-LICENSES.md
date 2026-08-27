@@ -67,13 +67,21 @@ removes its stdio backend. See
 [deps/minizip/VENDOR.md](deps/minizip/VENDOR.md). Reading `.zip` playlists
 depends on this even without PSF/SSF support enabled.
 
-## 7-Zip SDK — `deps/sevenzip`
+## libchdr — `deps/libchdr`
 
-Public domain. Igor Pavlov. Decode-only subset (LZMA, LZMA2, and the
-`.7z` container format itself) taken from the official 7-Zip SDK; the
-encoder side and the stdio-based `7zFile.c` are not vendored. See
-[deps/sevenzip/VENDOR.md](deps/sevenzip/VENDOR.md). Reading `.7z`
-playlists depends on this even without PSF/SSF support enabled.
+BSD-3-Clause. Aaron Giles and contributors; `include/dr_libs/dr_flac.h` is
+by David Reid, public domain / MIT-0. Reads CHD disc images: the hunk map,
+the `zlib`/`lzma`/`huff` codecs and their CD variants (`cdzl`, `cdlz`,
+`cdfl`).
+Hunks compressed with `zstd` are rejected with a message rather than
+supported. See [deps/libchdr/VENDOR.md](deps/libchdr/VENDOR.md).
+
+## LZMA SDK — `deps/libchdr/deps/lzma-26.02`
+
+Public domain. Igor Pavlov. Decode-only LZMA (`LzmaDec`), vendored inside
+libchdr because that is its only consumer: CHD stores hunks with the `lzma`
+and `cdlz` codecs. Only the five files libchdr includes are kept; the
+encoder and the stdio-based `7zFile.c` are not vendored.
 
 ## vgmstream — `deps/vgmstream`
 

@@ -17,3 +17,9 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 *.swp
+
+# Internal-only: test suite, the pre-release checklist and notes on local
+# patches to vendored deps. Kept in the private working tree, not published.
+tests/
+verificar_antes_de_subir.sh
+deps/patches/

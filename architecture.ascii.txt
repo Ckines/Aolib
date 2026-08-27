@@ -11,7 +11,7 @@
                              . . . . . . . . . . │ . . (GET_VFS_INTERFACE)
                              .                   ▼
 ┌────────────────────────────.───────────────────────────────────────────────────────────────────┐
-│ libretro.cpp – core entry point                                                                │
+│ src/ – the core, in layers (libretro.cpp keeps only the 25 retro_* entry points)               │
 │                                                                                                │
 │ ┌─ PROCESS STATE (survives every retro_load_game()) ─────────────────────────────────────────┐ │
 │ │                                                                                            │ │
@@ -24,13 +24,13 @@
 │ ┌─ PER-CONTENT STATE / I/O ──────────────────────────────────────────────────────────────────┐ │
 │ │                                                                                            │ │
 │ │  ┌─ CoreContext (rebuilt) ──────┐     ┌────────────────────┐     ┌──────────────────────┐  │ │
-│ │  │ CoreOptions · archive_is_7z  │     │     IVFSBridge     │     │  apply_ui_input()    │  │ │
+│ │  │ CoreOptions · archive_is_chd │     │     IVFSBridge     │     │  apply_ui_input()    │  │ │
 │ │  │ zip_entries · prefetch · job │     │ (LibretroVFS) I/O  │     │  pad/keyboard->deck  │  │ │
 │ │  │        │                     │     └─────────┬──────────┘     └──────────┬───────────┘  │ │
 │ │  │        ▼                     │               │                           │              │ │
 │ │  │ unique_ptr<IAudioEngine>     │               ▼                           ▼              │ │
 │ │  └──────────────────────────────┘     ┌────────────────────┐     ┌──────────────────────┐  │ │
-│ │                                       │ enumerate_zip/7z() │     │     ui::render()     │  │ │
+│ │                                       │ enumerate_zip/chd()│     │     ui::render()     │  │ │
 │ │                                       │  natural order     │     │  320x240 XRGB8888    │  │ │
 │ │                                       └─────────┬──────────┘     └──────────────────────┘  │ │
 │ └─────────────────────────────────────────────────┼──────────────────────────────────────────┘ │
@@ -53,7 +53,7 @@
 │ │  └────────────────┘                                                                        │ │
 │ │                                                                                            │ │
 │ │  ┌──── VgmstreamEngine (ISC, last in the chain) ────────────────────────────────────────┐  │ │
-│ │  │  49 extensions / 45 parsers: XA · VAG/SVAG/VPK/MIB · ADX/AHX · GC-DSP/BRSTM          │  │ │
+│ │  │  50 extensions / 46 parsers: XA · VAG/SVAG/VPK/MIB · ADX/AHX · GC-DSP/BRSTM          │  │ │
 │ │  │  AST · NDS STRM · RIFF/GENH · EA SCHl · CAF · FSB · GCub · MSS · ETC.                │  │ │
 │ │  │ ------------------------------------------------------------------------------------ │  │ │
 │ │  │  vgmstream_api (facade) --> vgmstream_vfs_adapter (STREAMFILE<->IVFSBridge)          │  │ │
@@ -89,17 +89,59 @@
 │ └────────────────────────────────────────────────────────────────────────────────────────────┘ │
 └────────────────────────────────────────────────────────────────────────────────────────────────┘
 
+ Core layers (src/, header-only, ONE translation unit -- libretro.cpp):
+   src/libretro.cpp                     the 25 retro_* entry points, nothing else
+   src/core_globals.hpp                 process state: frontend callbacks, g_ctx,
+                                         UiModel/Analyzer/Reverb, audio accounting, log
+   src/engine_dispatch.hpp              which engine opens which file: an ordered
+                                         CANDIDATE LIST, not a first-match chain. If the
+                                         extension's engine fails, content-gated backups
+                                         get a turn (libvgm by magic, libgme by
+                                         gme_identify_header, libxmp by
+                                         xmp_test_module_from_memory). vgmstream stays
+                                         LAST and whitelist-only; aosdk is never a
+                                         generic backup (2 MB of emulated RAM per open)
+   src/archive_playback.hpp             .zip/.chd playback: active entry, per-frame
+                                         prefetch, incremental duration probing,
+                                         load_zip_entry_from() (the ONE track-change path)
+   src/chd_reader.hpp                   CHD v5 over IVFSBridge: hunk map, two-hunk cache,
+                                         cdzl/cdlz/cdfl/zlib/lzma/huff. zstd hunks are
+                                         rejected with a message. CD-DA is stored
+                                         big-endian, so read_track() swaps and read()
+                                         does not -- read() must hand back the raw
+                                         stream or the SHA1 in the header stops matching
+   src/iso9660.hpp                      ISO9660 + Joliet over an injected sector reader,
+                                         so the same code serves a .chd, a loose .iso or
+                                         a buffer in a test
+   src/chd_playlist.hpp                 both music sources of a disc into one ZipEntry
+                                         list: CD-DA tracks and CD-XA audio files. XA
+                                         files are found through the CD-XA attributes in
+                                         the directory record, NOT by extension -- on
+                                         many discs they have none. Neither is ever
+                                         materialized: a disc runs to hundreds of MB
+   src/core_options.hpp                 RETRO_ENVIRONMENT_GET_VARIABLE -> CoreOptions
+   src/ui_glue.hpp                      content -> UiModel, pad -> deck/transport
+   They are 'static' inside namespace aolib, not 'inline': external linkage costs
+   +31,744 bytes on the .dll because PE-COFF --gc-sections will not drop the comdats.
+
  Module legend:
  [Process state]       : Persists across games (UiModel, AudioAnalyzer, dsp::Reverb)
  [Per-content state]   : Destroyed and rebuilt per ROM (CoreContext, IVFSBridge, Zip, Render)
  [Audio engines]       : Implement IAudioEngine (GME, LibVGM, libxmp, AOSDK, vgmstream)
+ [aosdk exclusion]     : ONE aosdk engine may live at a time. Two latches: per family
+                         (psx_ram/mipscpu for PSF1+PSF2, sat_ram/Musashi for SSF) and one
+                         shared by all three for corlett.c's fade counters, which PSF1,
+                         PSF2 and SSF all write. A busy latch fails the TRACK, never the
+                         process -- the warning is compiled out of release builds.
  [I/O & bridges]       : Integration with the Libretro API
  [Archive readers]     : enumerate_zip() (minizip 1.3.1, Store/Deflate, Zip64) and
-                         enumerate_7z() (7-Zip SDK, Store/LZMA/LZMA2) both fill the
-                         same std::vector<ZipEntry> -- downstream code (duration probing,
-                         track switching) never distinguishes .zip from .7z.
+                         chd_playlist::enumerate() both fill the same
+                         std::vector<ZipEntry> -- downstream code (duration probing,
+                         track switching) never distinguishes the two containers. The
+                         budget counts bytes RETAINED, a window that follows playback,
+                         not a cap on how many tracks the album has.
 
- vgmstream (deps/vgmstream, ISC, 33 formats -- see SUPPORTED_SYSTEMS.md):
+ vgmstream (deps/vgmstream, ISC, 34 formats -- see SUPPORTED_SYSTEMS.md):
    src/engine/vgmstream_api.{hpp,cpp}   thin C++ facade; ONLY translation unit
                                          that includes vgmstream's C headers
    src/vgmstream_vfs_adapter.hpp        libstreamfile_t <-> IVFSBridge, two paths:
@@ -137,12 +179,11 @@
            so a track change costs nothing in the audio loop. Deflate can be resumed
            between frames, which is what makes that possible.
 
-     .7z   The whole album is extracted while loading. 7-Zip compresses in SOLID BLOCKS
-           (one test album: 61 entries in 5 blocks), so pulling out a single entry means
-           decompressing its entire block, and LZMA runs at ~23 MB/s with no resumable
-           decode. Measured on the same 250 MB album: lazy extraction turned an 11 s load
-           into 2.5 s, but made every track change cost 2.5 s inside the frame. Eager is
-           the correct answer for this container, not technical debt.
+     .chd  Nothing is inflated: the hunk map gives random access, so a track is read
+           as it plays. A CD-DA track is never held in RAM (four minutes = 42 MB), and
+           neither is an XA file (one PS1 disc has a 100 MB one). Durations are measured
+           by sampling the XA interleave instead of counting every sector, which is what
+           keeps loading a 690 MB disc at ~0.2 s regardless of its size.
 
  Duration probing: the track lengths shown in the list are metadata, never needed by the
  audio path. They are probed incrementally during playback instead of up front, so

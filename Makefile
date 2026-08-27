@@ -10,6 +10,7 @@ DEPS_DIR    := deps
 # loud (unresolved Linux libstdc++ symbols under MinGW), but could
 # silently produce a corrupt binary with a different flag combination.
 PLATFORM ?= linux
+USE_CHD ?= 1
 
 ifeq ($(PLATFORM),windows)
 CXX := x86_64-w64-mingw32-g++
@@ -101,11 +102,12 @@ GME_CFLAGS := -DBLARGG_LITTLE_ENDIAN=1 -DVGM_YM2612_GENS=1
 INCLUDES := -Isrc -Isrc/engine \
             -I$(DEPS_DIR)/aosdk \
             -I$(DEPS_DIR)/minizip \
-            -I$(DEPS_DIR)/sevenzip \
             -I$(DEPS_DIR)/aosdk/zlib \
             -I$(DEPS_DIR)/game-music-emu/gme \
             -I$(DEPS_DIR)/libxmp-lite/include \
-            -I$(DEPS_DIR)/libvgm
+            -I$(DEPS_DIR)/libvgm \
+            -I$(DEPS_DIR)/libchdr/include \
+            -I$(DEPS_DIR)/libchdr/deps/zstd-shim
 
 # ─── libvgm: VGM/VGZ backend ────────────────────────────────────────────
 # Vendored without CMake; source selection and defines live here, same as
@@ -392,39 +394,51 @@ MINIZIP_SOURCES := \
 # en unzip.c para no tocar la fuente vendorizada.
 CFLAGS += -DUNZ_BUFSIZE=65536
 
-# ─── 7-Zip SDK (vendored, decode-only subset): ALWAYS compiled ──────────
-# Reads .7z archives directly (sevenzip_playlist.hpp), the same way
-# minizip reads .zip: the core opens the container itself through the VFS
-# and enumerates supported entries. Required even with USE_PSF_ENGINE=0,
-# same rationale as minizip -- a .7z can just as well hold VGM/SPC/etc.
+# --- libchdr: CHD (Compressed Hunks of Data) ------------------------------
+# Decode-only, sobre IVFSBridge a traves de su propia abstraccion
+# core_file_callbacks: ni una linea de libchdr parcheada. Ver
+# deps/libchdr/VENDOR.md.
 #
-# Public-domain C sources from the official 7-Zip SDK (Igor Pavlov); see
-# $(DEPS_DIR)/sevenzip/VENDOR.md for exactly which files were taken and
-# which were deliberately left out (7zFile.c: fopen()-based, forbidden by
-# this project's I/O rule, same reasoning as minizip's ioapi.c patch).
-#
-# Bra86.c/BraIA64.c/Bcj2.c: branch-filter and BCJ2 decoders. Not needed
-# for the audio-only content this core actually plays, but 7zDec.c
-# references them unconditionally for any solid block that used those
-# filters (mainly .exe-heavy 7z archives), so they're included for
-# correctness on archives this core didn't create.
-SEVENZIP_SOURCES := \
-  $(DEPS_DIR)/sevenzip/7zAlloc.c \
-  $(DEPS_DIR)/sevenzip/7zArcIn.c \
-  $(DEPS_DIR)/sevenzip/7zBuf.c \
-  $(DEPS_DIR)/sevenzip/7zBuf2.c \
-  $(DEPS_DIR)/sevenzip/7zCrc.c \
-  $(DEPS_DIR)/sevenzip/7zCrcOpt.c \
-  $(DEPS_DIR)/sevenzip/7zDec.c \
-  $(DEPS_DIR)/sevenzip/7zStream.c \
-  $(DEPS_DIR)/sevenzip/Bcj2.c \
-  $(DEPS_DIR)/sevenzip/Bra.c \
-  $(DEPS_DIR)/sevenzip/Bra86.c \
-  $(DEPS_DIR)/sevenzip/BraIA64.c \
-  $(DEPS_DIR)/sevenzip/CpuArch.c \
-  $(DEPS_DIR)/sevenzip/Delta.c \
-  $(DEPS_DIR)/sevenzip/Lzma2Dec.c \
-  $(DEPS_DIR)/sevenzip/LzmaDec.c
+# Dos dependencias se COMPARTEN en vez de duplicarse:
+#   CHDR_SYSTEM_ZLIB  -> deps/aosdk/zlib en vez de vendorizar miniz (350 KB)
+#   LZMA              -> deps/libchdr/deps/lzma-26.02, donde upstream lo
+#                        espera. Antes se compartia con el SDK de 7-Zip;
+#                        al retirar el .7z (1.2.3) se quedo aqui, que es su
+#                        unico consumidor. Son 5 ficheros del SDK oficial de
+#                        Igor Pavlov (dominio publico), no los 66 que hacian
+#                        falta para leer un .7z.
+# y una se rechaza:
+#   CHDR_SYSTEM_ZSTD  -> shim con el tipo opaco + libchdr_codec_zstd.c stub,
+#                        que hace fallar chd_open() con un mensaje que dice
+#                        como recrear el CHD. Vendorizar zstd son 984 KB de
+#                        fuente para un codec que hay que pedir a mano.
+LIBCHDR_DIR := $(DEPS_DIR)/libchdr
+
+LIBCHDR_SOURCES := \
+  $(LIBCHDR_DIR)/src/libchdr_bitstream.c \
+  $(LIBCHDR_DIR)/src/libchdr_cdrom.c \
+  $(LIBCHDR_DIR)/src/libchdr_chd.c \
+  $(LIBCHDR_DIR)/src/libchdr_codec_avhuff.c \
+  $(LIBCHDR_DIR)/src/libchdr_codec_cdfl.c \
+  $(LIBCHDR_DIR)/src/libchdr_codec_cdlz.c \
+  $(LIBCHDR_DIR)/src/libchdr_codec_cdzl.c \
+  $(LIBCHDR_DIR)/src/libchdr_codec_cdzs.c \
+  $(LIBCHDR_DIR)/src/libchdr_codec_flac.c \
+  $(LIBCHDR_DIR)/src/libchdr_codec_huff.c \
+  $(LIBCHDR_DIR)/src/libchdr_codec_lzma.c \
+  $(LIBCHDR_DIR)/src/libchdr_codec_zlib.c \
+  $(LIBCHDR_DIR)/src/libchdr_codec_zstd.c \
+  $(LIBCHDR_DIR)/src/libchdr_flac.c \
+  $(LIBCHDR_DIR)/src/libchdr_huffman.c \
+  $(LIBCHDR_DIR)/deps/lzma-26.02/src/LzmaDec.c
+
+LIBCHDR_CFLAGS := -DCHDR_SYSTEM_ZLIB=1 -DCHDR_SYSTEM_ZSTD=1 \
+                  -I$(LIBCHDR_DIR)/deps/lzma-26.02/include
+
+# Sus .c necesitan su propio -std y sus propias defines; la regla generica
+# %.o usaria los CFLAGS del proyecto y no llevaria CHDR_SYSTEM_*.
+$(LIBCHDR_DIR)/%.o: $(LIBCHDR_DIR)/%.c
+	$(CC) $(CFLAGS) $(LIBCHDR_CFLAGS) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
 
 # PSF/SSF container parser + utility hash table, shared by all three
 # aosdk engines. corlett.c is the format parser; utils.c provides the
@@ -479,13 +493,13 @@ AOSDK_ENGINE_SOURCES := \
 # peops2 is covered by the same GPL verdict as peops in
 # THIRD-PARTY-LICENSES.md (same author, same license).
 
-GME_SOURCES := $(filter-out %/Ym2612_Nuked.cpp %/Ym2612_MAME.cpp, \
-                 $(wildcard $(DEPS_DIR)/game-music-emu/gme/*.cpp))
 # Only ONE YM2612 backend can be compiled at a time (GENS here, via
-# -DVGM_YM2612_GENS). An unfiltered wildcard compiles all three and fails
-# linking an executable (tests) with unresolved symbols from the unused
-# backends -- a shared library wouldn't complain, since it tolerates
-# unresolved symbols by default.
+# -DVGM_YM2612_GENS): compiling several fails to link an executable (the
+# tests) with unresolved symbols from the unused ones. There used to be a
+# filter-out here for Ym2612_MAME.cpp and Ym2612_Nuked.cpp; those files are
+# no longer vendored, so the plain wildcard is now correct. Bringing one
+# back means bringing the filter back with it.
+GME_SOURCES := $(wildcard $(DEPS_DIR)/game-music-emu/gme/*.cpp)
 # ─── libxmp-lite: MOD/S3M/XM/IT ─────────────────────────────────────────
 # Vendorizado como fuentes, igual que el resto: sin CMake, sin .a externo,
 # sin paso de build aparte. Lista completa y ordenada tomada de
@@ -583,7 +597,7 @@ endif
 $(VGMSTREAM_DIR)/%.o: $(VGMSTREAM_DIR)/%.c
 	$(CC) $(VGMSTREAM_CFLAGS) $(DEPFLAGS) -I$(VGMSTREAM_DIR) -I$(VGMSTREAM_DIR)/util -c $< -o $@
 
-OBJS := $(CORE_SOURCES:.cpp=.o) $(GME_SOURCES:.cpp=.o) $(GME_EXT_SOURCES:.c=.o) $(ZLIB_SOURCES:.c=.o) $(MINIZIP_SOURCES:.c=.o) $(SEVENZIP_SOURCES:.c=.o) $(LIBVGM_OBJS) $(XMP_SOURCES:.c=.o) $(VGMSTREAM_ALL_OBJS)
+OBJS := $(CORE_SOURCES:.cpp=.o) $(GME_SOURCES:.cpp=.o) $(GME_EXT_SOURCES:.c=.o) $(ZLIB_SOURCES:.c=.o) $(MINIZIP_SOURCES:.c=.o) $(LIBVGM_OBJS) $(XMP_SOURCES:.c=.o) $(VGMSTREAM_ALL_OBJS)
 
 # Ambas familias, no solo CFLAGS: libretro.cpp incluye xmp_engine.hpp y
 # necesita LIBXMP_STATIC. Ver el bloque de libxmp-lite más arriba.
@@ -594,6 +608,13 @@ CFLAGS   += $(XMP_CFLAGS)
 # test-f2 (isolated parsing) compiles aosdk files and needs -DLSB_FIRST=1.
 CXXFLAGS += $(AOSDK_CFLAGS) $(GME_CFLAGS)
 CFLAGS   += $(AOSDK_CFLAGS)
+
+# CHD: contenedor de albumes y lector de imagenes de CD. Se puede apagar
+# con USE_CHD=0 para medir lo que cuesta o para un build minimo.
+ifeq ($(USE_CHD),1)
+OBJS += $(LIBCHDR_SOURCES:.c=.o)
+CXXFLAGS += -DAOLIB_WITH_CHD=1 $(LIBCHDR_CFLAGS)
+endif
 
 ifeq ($(USE_PSF_ENGINE),1)
 OBJS += $(AOSDK_ENGINE_SOURCES:.c=.o) src/engine/aosdk_host_glue.o
@@ -676,9 +697,10 @@ clean:
 	      $(DEPS_DIR)/libvgm/utils/StrUtils-CPConv_IConv.o
 	rm -f $(AOSDK_ENGINE_SOURCES:.c=.o) src/engine/aosdk_host_glue.o
 	rm -f deps/libvgm/emu/cores/c6280intf.o
-	rm -f deps/libvgm/emu/cores/es5506.o
-	rm -f deps/game-music-emu/gme/Ym2612_MAME.o deps/game-music-emu/gme/Ym2612_Nuked.o
-	rm -f tests/f21_xmp_engine tests/f22_vgmstream_formats tests/f23_vgmstream_vfs tests/f24_vgmstream_engine tests/f25_vgmstream_dispatch tests/z03_zip_end_to_end
+	rm -f tests/f21_xmp_engine tests/f22_vgmstream_formats tests/f23_vgmstream_vfs \
+	      tests/f24_vgmstream_engine tests/f25_vgmstream_dispatch tests/f26_channel_layout \
+	      tests/z03_zip_end_to_end tests/a01_aosdk_isolation \
+	      tests/c01_chd_reader tests/c02_iso9660 tests/c03_chd_playlist
 	# .d files from -MMD live next to each .o
 	find src tests deps -name '*.d' -delete 2>/dev/null || true
 
@@ -764,8 +786,55 @@ test-all:
 	$(MAKE) test-f25 USE_VGMSTREAM=1
 	$(MAKE) clean
 	$(MAKE) test-f26 USE_VGMSTREAM=1 STREAMS="$(STREAMS)"
+# No necesita contenido: los guards se piden en el constructor del motor.
+# Se compila SIN AOLIB_TEST_HOOKS a propósito, con las mismas flags que el
+# binario que se distribuye -- el invariante que comprueba (una violación
+# rechaza la carga, no aborta el proceso) solo es cierto o falso ahí.
+test-a01: tests/a01_aosdk_isolation.cpp $(AOSDK_ENGINE_SOURCES:.c=.o)           src/engine/aosdk_bridge.o src/engine/aosdk_host_glue.o           $(ZLIB_SOURCES:.c=.o)
+	$(CXX) $(CXXFLAGS) -DAOLIB_WITH_PSF=1 $(INCLUDES) 	    -o tests/a01_aosdk_isolation 	    tests/a01_aosdk_isolation.cpp $(AOSDK_ENGINE_SOURCES:.c=.o) 	    src/engine/aosdk_bridge.o src/engine/aosdk_host_glue.o 	    $(ZLIB_SOURCES:.c=.o) -lm
+	./tests/a01_aosdk_isolation
+# --- el lector de CHD, contra el propio formato -------------------------
+# El oraculo esta DENTRO del fichero: la cabecera v5 lleva el SHA1 de todo
+# el flujo logico y el mapa de hunks un CRC por hunk. Si nuestro lector
+# descomprime los N hunks y el SHA1 cuadra, es correcto sin depender de
+# ninguna herramienta externa. CHD= uno o varios .chd.
+test-c01: tests/c01_chd_reader.cpp $(LIBCHDR_SOURCES:.c=.o) $(ZLIB_SOURCES:.c=.o)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) \
+	    -o tests/c01_chd_reader \
+	    tests/c01_chd_reader.cpp $(LIBCHDR_SOURCES:.c=.o) \
+	    $(ZLIB_SOURCES:.c=.o) -lm
+	./tests/c01_chd_reader $(CHD)
 
-.PHONY: all clean dist dist-windows dist-all test-f21 test-f22 test-f23 test-f24 test-f25 test-f26 test-z03 test-all
+# --- el lector de ISO9660+Joliet, contra 7-Zip --------------------------
+# Aqui el oraculo tiene que ser externo: se compara la enumeracion contra
+# `7z l -slt` de la MISMA imagen. IMAGEN= un .chd o un .iso;
+# ORACULO= el listado de 7-Zip; VOLCAR= donde dejar la vista de sistema de
+# ficheros como .iso suelto, que es lo que se le da a 7-Zip.
+test-c02: tests/c02_iso9660.cpp $(LIBCHDR_SOURCES:.c=.o) $(ZLIB_SOURCES:.c=.o)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) \
+	    -o tests/c02_iso9660 \
+	    tests/c02_iso9660.cpp $(LIBCHDR_SOURCES:.c=.o) \
+	    $(ZLIB_SOURCES:.c=.o) -lm
+	./tests/c02_iso9660 $(IMAGEN) $(if $(ORACULO),--oraculo $(ORACULO)) $(if $(VOLCAR),--volcar $(VOLCAR))
+
+
+# --- la lista de un .chd y el motor de CD-DA ----------------------------
+# Cadena entera: enumerar -> abrir CdAudioEngine -> rendir la pista entera.
+# Con ORACULO= el .bin de `chdman extractcd`, las muestras se comparan byte
+# a byte, que es lo que valida el orden de bytes del CD-DA (CHD lo guarda
+# en big-endian), el desplazamiento de la pista y el relleno de 4 marcos.
+# CHD= el fichero; ORACULO= opcional.
+test-c03: tests/c03_chd_playlist.cpp $(LIBCHDR_SOURCES:.c=.o) $(ZLIB_SOURCES:.c=.o) \
+          $(MINIZIP_SOURCES:.c=.o)
+	$(CXX) $(CXXFLAGS) -DAOLIB_WITH_VGMSTREAM=1 $(INCLUDES) \
+	    -o tests/c03_chd_playlist \
+	    tests/c03_chd_playlist.cpp $(LIBCHDR_SOURCES:.c=.o) \
+	    $(ZLIB_SOURCES:.c=.o) $(MINIZIP_SOURCES:.c=.o) \
+	    -lm
+	./tests/c03_chd_playlist $(CHD) $(if $(ORACULO),--oraculo $(ORACULO))
+
+
+.PHONY: all clean dist dist-windows dist-all test-f21 test-f22 test-f23 test-f24 test-f25 test-f26 test-z03 test-a01 test-c01 test-c02 test-c03 test-all
 
 # ─── one-off diagnostic probes (NOT part of the permanent suite) ────
 # These need real, non-distributable content in /tmp and are run by hand.
