@@ -116,9 +116,8 @@ make dist-all USE_VGMSTREAM=1      # both platforms
 ```
 
 Only the `dist*` targets strip the binary (`strip --strip-all`, using
-`x86_64-w64-mingw32-strip` on Windows). That is what brings the DLL down
-to ~2.6 MB; a plain `make all` binary deliberately keeps its debug
-symbols and is several MB larger.
+`x86_64-w64-mingw32-strip` on Windows). `make all` binary deliberately keeps 
+its debug symbols and is several MB larger.
 
 `info` lives at the repo root (`aolib_libretro.info`, single source of
 truth) and is copied into `dist-linux/`/`dist-windows/` by the packaging
