@@ -193,7 +193,7 @@ RETRO_API void retro_get_system_info(struct retro_system_info* info) {
     info->library_name     = "Aolib";
     // Mantener sincronizado con display_version en dist/aolib_libretro.info
     // y dist-windows/aolib_libretro.info.
-    info->library_version  = "1.2.4";
+    info->library_version  = "1.4.0";
     // Se construye una vez y se conserva: RETRO_API no copia la cadena, y
     // devolver un temporal dejaría al frontend con un puntero colgante.
     static const std::string kValidExtensions = [] {
