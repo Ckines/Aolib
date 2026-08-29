@@ -25,7 +25,7 @@ AOLIB also supports CHD files as audio containers just like .zip files. Take adv
 | vgmstream | `.xa` `.str` `.pxa` `.xai` `.vag` `.psh` `.npsf` `.adx` `.dsp` `.brstm` `.genh` |
 
 **The breakdown of which chip or format covers which system or arcade board is in**
-[SUPPORTED_SYSTEMS.md](SUPPORTED_SYSTEMS.md).
+[SUPPORTED_SYSTEMS](SUPPORTED_SYSTEMS.md)
 
 ![AOLIB deck screenshot](aolibdeck.png) ![AOLIB deck screenshot](aolibdeck1.png)
 
@@ -134,7 +134,7 @@ M68000 cores don't support two live instances at once. The audio pipeline
 applies reverb BEFORE the gain stage — so the tail rises with the overall
 volume — and analyzes the signal AFTER. 
 You can see the complete System Architecture Diagram and pipiline at.
-[architecture.ascii.txt](architecture.ascii.txt).
+[architecture.ascii](architecture.ascii.txt).
 
 
 ## Licensing
